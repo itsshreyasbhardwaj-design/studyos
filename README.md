@@ -18,7 +18,7 @@ Open http://localhost:3111. First run seeds a sample IB student so the UI is not
 empty; delete `studyos.db` to start clean.
 
 ```bash
-pnpm test        # 114 tests, no build step, ~0.5s
+pnpm test        # 140 tests, no build step, ~0.5s
 pnpm build       # production build of the web app
 ```
 
@@ -38,6 +38,10 @@ Requires Node 24+ (for `node:sqlite` and native TypeScript execution) and pnpm.
   from it.
 - **Revision** — FSRS-4.5 queue with interleaving, backlog triage, and a
   forgetfulness radar that states its evidence for every row.
+- **Knowledge graph** — topics laid out by prerequisite depth, coloured by
+  mastery. Its real output is the analysis: *weak foundations* names the
+  prerequisite that plausibly explains a topic you're stuck on, and *ready to
+  learn* names what's cheapest to start next.
 - **Analytics** — 30-day trends, consistency measured by days shown up rather
   than hours piled on, subject and category breakdowns.
 - **Daily Report** — assembled from records, with every figure labelled by
@@ -60,6 +64,9 @@ Three consequences that are enforced in code rather than by convention:
   automatically, because attribution involved a tie-break.
 - `assessMastery` receives no study-duration input at all; a test asserts this.
 - A never-reviewed card reports *no* retention rather than 0%.
+- The graph reports a foundation gap only when the struggling topic *and* a
+  prerequisite are both weak — a hard topic with solid prerequisites is a
+  different problem, and the panel stays quiet about it.
 
 ## Documentation
 

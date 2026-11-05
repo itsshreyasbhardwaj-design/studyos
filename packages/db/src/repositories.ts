@@ -100,6 +100,80 @@ export function listTopics(
   return (subjectId ? stmt.all(userId, subjectId) : stmt.all(userId)) as any;
 }
 
+// ---------- topic links (knowledge graph) ----------
+
+/**
+ * Link two topics. `fromTopicId` is the prerequisite: learn it before
+ * `toTopicId`. Both topics must belong to `userId`, so a link can never be
+ * used to reach across accounts.
+ */
+export function createTopicLink(
+  db: Db,
+  userId: string,
+  input: { fromTopicId: string; toTopicId: string; kind: 'prerequisite' | 'related' },
+): { created: boolean; reason?: string } {
+  if (input.fromTopicId === input.toTopicId) {
+    return { created: false, reason: 'a topic cannot be its own prerequisite' };
+  }
+  const owned = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM topics t JOIN subjects s ON s.id = t.subject_id
+       WHERE s.user_id = ? AND t.id IN (?, ?)`,
+    )
+    .get(userId, input.fromTopicId, input.toTopicId) as { n: number };
+  if (owned.n < 2) return { created: false, reason: 'both topics must belong to this user' };
+
+  const res = db
+    .prepare(
+      `INSERT OR IGNORE INTO topic_links (from_topic_id, to_topic_id, kind) VALUES (?, ?, ?)`,
+    )
+    .run(input.fromTopicId, input.toTopicId, input.kind);
+  return { created: res.changes > 0 };
+}
+
+export function listTopicLinks(
+  db: Db,
+  userId: string,
+): Array<{ fromTopicId: string; toTopicId: string; kind: 'prerequisite' | 'related' }> {
+  const rows = db
+    .prepare(
+      `SELECT l.from_topic_id, l.to_topic_id, l.kind FROM topic_links l
+       JOIN topics tf ON tf.id = l.from_topic_id
+       JOIN subjects sf ON sf.id = tf.subject_id
+       JOIN topics tt ON tt.id = l.to_topic_id
+       JOIN subjects st ON st.id = tt.subject_id
+       WHERE sf.user_id = ? AND st.user_id = ?
+       ORDER BY l.from_topic_id, l.to_topic_id`,
+    )
+    .all(userId, userId) as Array<{ from_topic_id: string; to_topic_id: string; kind: string }>;
+  return rows.map((r) => ({
+    fromTopicId: r.from_topic_id,
+    toTopicId: r.to_topic_id,
+    kind: r.kind as 'prerequisite' | 'related',
+  }));
+}
+
+export function deleteTopicLink(
+  db: Db,
+  userId: string,
+  input: { fromTopicId: string; toTopicId: string; kind: 'prerequisite' | 'related' },
+): boolean {
+  const owned = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM topics t JOIN subjects s ON s.id = t.subject_id
+       WHERE s.user_id = ? AND t.id IN (?, ?)`,
+    )
+    .get(userId, input.fromTopicId, input.toTopicId) as { n: number };
+  if (owned.n < 2) return false;
+  return (
+    db
+      .prepare(
+        'DELETE FROM topic_links WHERE from_topic_id = ? AND to_topic_id = ? AND kind = ?',
+      )
+      .run(input.fromTopicId, input.toTopicId, input.kind).changes > 0
+  );
+}
+
 // ---------- tasks ----------
 
 export function createTask(
@@ -727,7 +801,7 @@ export function pendingMutations(db: Db, userId: string): number {
 
 /** Tables that hold user-owned data, in the order a full export walks them. */
 const USER_TABLES = [
-  'users', 'devices', 'workspaces', 'subjects', 'units', 'topics', 'tasks',
+  'users', 'devices', 'workspaces', 'subjects', 'units', 'topics', 'topic_links', 'tasks',
   'task_dependencies', 'activity_events', 'focus_sessions', 'notes', 'note_versions',
   'flashcards', 'revision_states', 'review_log', 'practice_attempts', 'mistakes',
   'exams', 'availability', 'daily_reports', 'sync_queue', 'audit_log', 'revision_params',
@@ -745,6 +819,12 @@ export function exportUserData(db: Db, userId: string): Record<string, unknown[]
     .all(userId);
   out.topics = db
     .prepare('SELECT t.* FROM topics t JOIN subjects s ON s.id = t.subject_id WHERE s.user_id = ?')
+    .all(userId);
+  out.topic_links = db
+    .prepare(
+      `SELECT l.* FROM topic_links l JOIN topics t ON t.id = l.from_topic_id
+       JOIN subjects s ON s.id = t.subject_id WHERE s.user_id = ?`,
+    )
     .all(userId);
   out.tasks = db.prepare('SELECT * FROM tasks WHERE user_id = ?').all(userId);
   out.task_dependencies = db

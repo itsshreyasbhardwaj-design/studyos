@@ -43,34 +43,90 @@ function seedIfEmpty(conn: Db): void {
   const now = Date.now();
   const user = repo.createUser(conn, { displayName: 'Demo Student', timezone: 'UTC' });
 
-  const plan: Array<[string, string, string[]]> = [
-    ['Physics HL', 'IB DP', ['Kinematics', 'Forces and momentum', 'Work and energy', 'Wave behaviour']],
-    ['Mathematics AA HL', 'IB DP', ['Differentiation', 'Integration', 'Vectors', 'Complex numbers']],
-    ['Computer Science HL', 'IB DP', ['Abstract data structures', 'Recursion', 'Databases']],
-    ['Economics SL', 'IB DP', ['Elasticity', 'Market failure', 'Macro objectives']],
+  /**
+   * Per-topic learning profiles. Hand-set rather than random so the seeded
+   * student is *legible*: the knowledge graph needs solid topics, decayed
+   * topics and untouched topics to exist side by side, or its colour scale
+   * and its gap analysis have nothing to distinguish.
+   */
+  type Profile = 'mastered' | 'strong' | 'practising' | 'learning' | 'needs_revision' | 'not_started';
+
+  const plan: Array<[string, string, Array<[string, Profile]>]> = [
+    ['Physics HL', 'IB DP', [
+      ['Kinematics', 'strong'],
+      ['Forces and momentum', 'needs_revision'],
+      ['Work and energy', 'practising'],
+      ['Wave behaviour', 'not_started'],
+    ]],
+    ['Mathematics AA HL', 'IB DP', [
+      ['Differentiation', 'mastered'],
+      ['Integration', 'practising'],
+      ['Vectors', 'needs_revision'],
+      ['Complex numbers', 'not_started'],
+    ]],
+    ['Computer Science HL', 'IB DP', [
+      ['Recursion', 'needs_revision'],
+      ['Abstract data structures', 'not_started'],
+      ['Databases', 'learning'],
+    ]],
+    ['Economics SL', 'IB DP', [
+      ['Elasticity', 'needs_revision'],
+      ['Market failure', 'not_started'],
+      ['Macro objectives', 'not_started'],
+    ]],
   ];
 
-  const topicIds: Record<string, string> = {};
-  for (const [name, curriculum, topics] of plan) {
-    const subject = repo.createSubject(conn, user.id, { name, curriculum, level: name.endsWith('HL') ? 'HL' : 'SL' });
-    topics.forEach((topicName, i) => {
-      const { id } = repo.createTopic(conn, { subjectId: subject.id, name: topicName, position: i });
-      topicIds[`${name}/${topicName}`] = id;
+  /**
+   * Review histories that actually produce the intended state through FSRS,
+   * rather than being written into the database as a label. Days are offsets
+   * back from now; grades are Again(1)/Hard(2)/Good(3).
+   */
+  const REVIEW_HISTORY: Record<Profile, Array<[number, 1 | 2 | 3]>> = {
+    mastered: [[70, 3], [50, 3], [22, 3], [3, 3]],
+    strong: [[60, 3], [40, 3], [16, 3], [4, 3]],
+    practising: [[35, 3], [14, 3], [5, 3]],
+    learning: [[24, 2], [7, 2]],
+    // Reviewed, then lapsed, then left alone: low stability and long elapsed
+    // time, which is what actually drives retention below the floor.
+    needs_revision: [[55, 3], [38, 1]],
+    not_started: [],
+  };
 
-      // Two cards per topic, with varied review histories so the radar and the
-      // queue have something real to rank.
+  /** [total attempts, correct attempts, days to spread them across]. */
+  const ATTEMPTS: Record<Profile, [number, number, number]> = {
+    mastered: [12, 12, 4],
+    strong: [8, 7, 3],
+    practising: [8, 5, 3],
+    learning: [4, 1, 2],
+    needs_revision: [3, 1, 2],
+    not_started: [0, 0, 1],
+  };
+
+  const topicIds: Record<string, string> = {};
+  const topicProfiles: Array<[string, string, Profile]> = [];
+
+  for (const [name, curriculum, topics] of plan) {
+    const subject = repo.createSubject(conn, user.id, {
+      name,
+      curriculum,
+      level: name.endsWith('HL') ? 'HL' : 'SL',
+    });
+    topics.forEach(([topicName, profile], i) => {
+      const { id } = repo.createTopic(conn, { subjectId: subject.id, name: topicName, position: i });
+      const key = `${name}/${topicName}`;
+      topicIds[key] = id;
+      topicProfiles.push([key, id, profile]);
+
       for (let c = 0; c < 2; c++) {
         const { id: cardId } = repo.createCard(conn, user.id, {
           topicId: id,
           front: `${topicName}: recall prompt ${c + 1}`,
           back: `Worked answer for ${topicName} (${c + 1})`,
         });
-        const age = (i * 2 + c) % 5;
-        if (age > 0) {
-          // Grade it in the past so stability and due dates are genuine FSRS output.
-          const firstAt = now - (age * 7 + 3) * DAY_MS;
-          repo.gradeCard(conn, user.id, cardId, age % 3 === 0 ? 2 : 3, firstAt);
-          if (age > 2) repo.gradeCard(conn, user.id, cardId, age % 2 === 0 ? 1 : 3, firstAt + 4 * DAY_MS);
+        // Replay the history through the real scheduler, so stability and due
+        // dates are genuine FSRS output rather than invented numbers.
+        for (const [daysAgo, grade] of REVIEW_HISTORY[profile]) {
+          repo.gradeCard(conn, user.id, cardId, grade, now - daysAgo * DAY_MS);
         }
       }
     });
@@ -90,6 +146,48 @@ function seedIfEmpty(conn: Db): void {
         subjectId: subject.id, title: 'Maths AA HL Paper 1', component: 'Paper 1',
         startsAt: now + 26 * DAY_MS,
       });
+    }
+  }
+
+  for (const [key, topicId, profile] of topicProfiles) {
+    const [total, correct, spreadDays] = ATTEMPTS[profile];
+    for (let i = 0; i < total; i++) {
+      const isCorrect = i < correct;
+      repo.recordAttempt(conn, user.id, {
+        topicId,
+        attemptedAt: now - (i % spreadDays) * DAY_MS - 5 * 3_600_000,
+        correct: isCorrect,
+        errorCategory: isCorrect ? undefined : 'see mistake notebook',
+        question: `${key.split('/')[1]} — practice question ${i + 1}`,
+        // Historical wrong answers on topics the student has since worked
+        // through are logged as attempts without leaving the mistake open;
+        // only the genuinely weak topics keep unresolved entries.
+        logMistake: profile === 'needs_revision',
+      });
+    }
+  }
+
+  // Prerequisite structure for the knowledge graph. Cross-subject edges are
+  // deliberate: calculus really does underpin kinematics, and the graph should
+  // show that rather than pretending subjects are independent silos.
+  const links: Array<[string, string, 'prerequisite' | 'related']> = [
+    ['Physics HL/Kinematics', 'Physics HL/Forces and momentum', 'prerequisite'],
+    ['Physics HL/Forces and momentum', 'Physics HL/Work and energy', 'prerequisite'],
+    ['Mathematics AA HL/Differentiation', 'Mathematics AA HL/Integration', 'prerequisite'],
+    ['Mathematics AA HL/Differentiation', 'Physics HL/Kinematics', 'prerequisite'],
+    ['Mathematics AA HL/Vectors', 'Physics HL/Forces and momentum', 'prerequisite'],
+    ['Mathematics AA HL/Integration', 'Physics HL/Work and energy', 'prerequisite'],
+    ['Computer Science HL/Recursion', 'Computer Science HL/Abstract data structures', 'prerequisite'],
+    ['Economics SL/Elasticity', 'Economics SL/Market failure', 'prerequisite'],
+    ['Economics SL/Elasticity', 'Economics SL/Macro objectives', 'prerequisite'],
+    ['Mathematics AA HL/Vectors', 'Mathematics AA HL/Complex numbers', 'related'],
+    ['Physics HL/Wave behaviour', 'Mathematics AA HL/Complex numbers', 'related'],
+  ];
+  for (const [from, to, kind] of links) {
+    const fromId = topicIds[from];
+    const toId = topicIds[to];
+    if (fromId && toId) {
+      repo.createTopicLink(conn, user.id, { fromTopicId: fromId, toTopicId: toId, kind });
     }
   }
 
@@ -168,35 +266,6 @@ function seedIfEmpty(conn: Db): void {
       });
     }
   }
-
-  // Practice attempts, including wrong answers that open mistake entries.
-  const attemptPlan: Array<[string, boolean, string | undefined]> = [
-    ['Physics HL/Forces and momentum', false, 'force diagram: missed normal reaction'],
-    ['Physics HL/Forces and momentum', false, 'sign error resolving components'],
-    ['Physics HL/Forces and momentum', true, undefined],
-    ['Physics HL/Kinematics', true, undefined],
-    ['Physics HL/Kinematics', true, undefined],
-    ['Physics HL/Kinematics', true, undefined],
-    ['Mathematics AA HL/Integration', false, 'forgot the constant of integration'],
-    ['Mathematics AA HL/Integration', true, undefined],
-    ['Mathematics AA HL/Integration', true, undefined],
-    ['Mathematics AA HL/Differentiation', true, undefined],
-    ['Mathematics AA HL/Differentiation', true, undefined],
-    ['Mathematics AA HL/Differentiation', true, undefined],
-    ['Mathematics AA HL/Differentiation', true, undefined],
-    ['Computer Science HL/Recursion', false, 'no base case'],
-  ];
-  attemptPlan.forEach(([key, correct, errorCategory], i) => {
-    const topicId = topicIds[key];
-    if (!topicId) return;
-    repo.recordAttempt(conn, user.id, {
-      topicId,
-      attemptedAt: now - (i % 6) * DAY_MS - 4 * 3_600_000,
-      correct,
-      errorCategory,
-      question: `${key.split('/')[1]} — practice question ${i + 1}`,
-    });
-  });
 
   // Free time for the next week: evenings, with a fixed lesson tomorrow.
   const blocks = [];

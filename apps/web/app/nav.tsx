@@ -9,6 +9,7 @@ const LINKS = [
   { href: '/planner', label: 'Planner' },
   { href: '/subjects', label: 'Subjects' },
   { href: '/revision', label: 'Revision' },
+  { href: '/graph', label: 'Knowledge Graph' },
   { href: '/analytics', label: 'Analytics' },
   { href: '/report', label: 'Daily Report' },
 ];

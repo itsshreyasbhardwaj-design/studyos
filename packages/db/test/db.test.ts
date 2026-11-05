@@ -389,3 +389,84 @@ test('reviews are counted only inside the requested window', () => {
   assert.equal(repo.listReviewTimestamps(db, userId, NOW - DAY_MS, NOW + DAY_MS).length, 1);
   assert.equal(repo.listReviewTimestamps(db, userId, NOW - DAY_MS, NOW + 30 * DAY_MS).length, 2);
 });
+
+test('topic links round-trip and are scoped to their owner', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'Differentiation' });
+  const b = repo.createTopic(db, { subjectId, name: 'Integration' });
+
+  assert.deepEqual(
+    repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' }),
+    { created: true },
+  );
+  const links = repo.listTopicLinks(db, userId);
+  assert.deepEqual(links, [{ fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' }]);
+
+  const other = repo.createUser(db, { displayName: 'Other' });
+  assert.deepEqual(repo.listTopicLinks(db, other.id), [], 'links must not leak across users');
+});
+
+test('a duplicate topic link is a no-op rather than an error', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  const link = { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' as const };
+  assert.equal(repo.createTopicLink(db, userId, link).created, true);
+  assert.equal(repo.createTopicLink(db, userId, link).created, false);
+  assert.equal(repo.listTopicLinks(db, userId).length, 1);
+});
+
+test('a topic cannot be made its own prerequisite', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const result = repo.createTopicLink(db, userId, {
+    fromTopicId: a.id,
+    toTopicId: a.id,
+    kind: 'prerequisite',
+  });
+  assert.equal(result.created, false);
+  assert.match(result.reason!, /own prerequisite/);
+});
+
+test('linking across accounts is refused', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  const mine = repo.createTopic(db, {
+    subjectId: repo.createSubject(db, userId, { name: 'Mine' }).id,
+    name: 'Mine',
+  });
+  const theirs = repo.createTopic(db, {
+    subjectId: repo.createSubject(db, other.id, { name: 'Theirs' }).id,
+    name: 'Theirs',
+  });
+  const result = repo.createTopicLink(db, userId, {
+    fromTopicId: mine.id,
+    toTopicId: theirs.id,
+    kind: 'prerequisite',
+  });
+  assert.equal(result.created, false);
+  assert.match(result.reason!, /belong to this user/);
+  assert.deepEqual(repo.listTopicLinks(db, userId), []);
+});
+
+test('deleting a topic removes its links, and account deletion clears them', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' });
+
+  db.prepare('DELETE FROM topics WHERE id = ?').run(a.id);
+  assert.deepEqual(repo.listTopicLinks(db, userId), [], 'links must cascade with the topic');
+
+  const c = repo.createTopic(db, { subjectId, name: 'C' });
+  repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: c.id, kind: 'related' });
+  assert.ok(repo.exportUserData(db, userId).topic_links.length === 1, 'export must include links');
+
+  repo.deleteUser(db, userId);
+  const left = db.prepare('SELECT COUNT(*) AS n FROM topic_links').get() as { n: number };
+  assert.equal(left.n, 0, 'account deletion left topic links behind');
+});

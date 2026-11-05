@@ -79,6 +79,28 @@ The planner's most important output is the admission of failure: `unscheduled`,
 `risks` and `feasible` exist so the UI can say "this does not fit" instead of
 rendering a plan that quietly drops work.
 
+## Knowledge graph
+
+A graph drawing that only shows which topics exist is decoration. What earns
+the view its place is what the structure makes computable:
+
+- **`prerequisiteGaps`** — fires only when the dependent topic is not solid
+  **and** a prerequisite is not solid. A topic someone finds hard *despite*
+  strong foundations is a different problem; claiming a foundation gap there
+  would send them to revise the wrong thing.
+- **`readyToLearn`** — the inverse, and the more actionable half: not-yet-started
+  topics whose prerequisites are all solid.
+
+`needs_revision` deliberately ranks as weak, level with `learning`. It means
+the topic was known once and has decayed, and decayed knowledge is not a
+foundation to build on. Ranking it as solid would hide exactly the gaps this
+view exists to find.
+
+Layout is longest-path layering with stable tie-breaks, grouped into subject
+bands — so every prerequisite arrow points rightward, the same data always
+draws the same graph, and positions can be asserted in tests. No physics
+simulation, and no 3D: neither would add information.
+
 ## Persistence
 
 - Foreign keys are enabled explicitly (`PRAGMA foreign_keys = ON`). Without it

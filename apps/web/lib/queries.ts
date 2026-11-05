@@ -2,6 +2,9 @@ import 'server-only';
 import * as repo from '@studyos/db';
 import {
   aggregateEvents,
+  buildGraph,
+  prerequisiteGaps,
+  readyToLearn,
   assessMastery,
   buildDailyReport,
   buildQueue,
@@ -234,6 +237,59 @@ export function loadSubjects(now = Date.now()) {
         thirtyDayMinutes: Math.round(totals.productiveMs / 60_000),
       };
     }),
+  };
+}
+
+/**
+ * Knowledge graph: every topic with its evidence-based mastery, the links
+ * between them, and the two analyses that make the drawing worth having.
+ */
+export function loadGraph(now = Date.now()) {
+  const conn = db();
+  const userId = currentUserId();
+  const subjects = repo.listSubjects(conn, userId);
+  const subjectNames = Object.fromEntries(subjects.map((s) => [s.id, s.name]));
+  const topics = repo.listTopics(conn, userId);
+  const cards = repo.listRevisionCards(conn, userId);
+  const links = repo.listTopicLinks(conn, userId);
+
+  const cardsByTopic = new Map<string, typeof cards>();
+  for (const c of cards) {
+    const list = cardsByTopic.get(c.topicId);
+    if (list) list.push(c);
+    else cardsByTopic.set(c.topicId, [c]);
+  }
+
+  const details: Record<string, { nextStep: string; reasons: string[] }> = {};
+  const nodeInputs = topics.map((t) => {
+    const topicCards = cardsByTopic.get(t.id) ?? [];
+    const assessment = assessMastery({
+      attempts: repo.listAttempts(conn, userId, t.id),
+      revisionStates: topicCards.map((c) => c.state),
+      openMistakes: repo.countOpenMistakes(conn, userId, t.id),
+      now,
+    });
+    details[t.id] = { nextStep: assessment.nextStep, reasons: assessment.reasons };
+    return {
+      topicId: t.id,
+      name: t.name,
+      subjectId: t.subject_id,
+      subjectName: subjectNames[t.subject_id] ?? t.subject_id,
+      state: assessment.state,
+      accuracy: assessment.accuracy,
+      predictedRetention: assessment.predictedRetention,
+      attemptCount: assessment.attemptCount,
+      dueCards: topicCards.filter((c) => c.state.dueAt <= now).length,
+    };
+  });
+
+  const graph = buildGraph(nodeInputs, links);
+  return {
+    graph,
+    gaps: prerequisiteGaps(graph),
+    ready: readyToLearn(graph),
+    details,
+    subjectNames,
   };
 }
 

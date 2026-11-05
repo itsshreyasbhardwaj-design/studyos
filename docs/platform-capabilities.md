@@ -52,7 +52,9 @@ in a browser.
 | Deterministic planner | **Built** | Dependency-aware, deadline-aware, reports infeasibility instead of hiding it. |
 | What-if scenarios | **Built** | Re-runs the planner under altered assumptions. |
 | Daily intelligence report | **Built** | Assembled from records; every figure carries provenance. |
-| Knowledge graph | **Partial** | `topic_links` schema with prerequisite/related edges exists; no graph visualisation UI. |
+| Knowledge graph | **Built** | Interactive SVG graph with deterministic layering, search, mastery filters, click-to-focus neighbourhood dimming, and a relations panel. |
+| Weak-prerequisite detection | **Built** | Reports a foundation gap only when the dependent topic *and* a prerequisite are both unsolid, so it never sends the user to revise the wrong thing. |
+| Ready-to-learn detection | **Built** | Not-yet-started topics whose prerequisites are all solid. |
 | AI tutor | **Not built** | Requires a paid model API. See `docs/limitations.md` — this was a deliberate refusal, not an oversight. |
 | Master Notes / document ingestion | **Partial** | Notes with versioning and full-text search are built. PDF/DOCX parsing and RAG are not. |
 | AI oral examiner | **Not built** | Requires speech and model APIs. |
