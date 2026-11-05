@@ -66,10 +66,10 @@ already handles multiple simultaneous devices.
 - **Time zones are handled by host offset.** `dayWindow` uses the host's offset.
   A user crossing time zones mid-day will see day boundaries shift. The schema
   stores a per-user timezone, but it is not yet threaded through the analytics.
-- **Topic links are seeded, not inferred.** The knowledge graph draws the
-  prerequisite edges it is given. Nothing infers them from a syllabus, and
-  there is no UI for editing links yet — `createTopicLink` exists and is
-  tested, but is only called by the seed.
+- **Topic links are authored, not inferred.** Prerequisites can be added and
+  removed from the graph's side panel, and circular chains are refused at the
+  database boundary. But nothing *derives* the edges from a syllabus — the
+  graph draws the structure you give it.
 - **Mastery thresholds are hand-set.** The accuracy and attempt-count cut-offs
   are reasoned defaults, not empirically calibrated against learning outcomes.
 - **Single-user local mode.** There is no login. Anyone with access to the
@@ -81,7 +81,7 @@ already handles multiple simultaneous devices.
 
 ## What was verified, and how
 
-- 140 automated tests across the core and database packages, all passing
+- 155 automated tests across the core and database packages, all passing
   (`pnpm test`).
 - The web app was built (`next build`, TypeScript checks passing) and driven in
   a real browser: every route rendered, a flashcard was graded through the UI,

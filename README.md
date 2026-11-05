@@ -18,7 +18,7 @@ Open http://localhost:3111. First run seeds a sample IB student so the UI is not
 empty; delete `studyos.db` to start clean.
 
 ```bash
-pnpm test        # 140 tests, no build step, ~0.5s
+pnpm test        # 155 tests, no build step, ~0.5s
 pnpm build       # production build of the web app
 ```
 
@@ -41,7 +41,8 @@ Requires Node 24+ (for `node:sqlite` and native TypeScript execution) and pnpm.
 - **Knowledge graph** — topics laid out by prerequisite depth, coloured by
   mastery. Its real output is the analysis: *weak foundations* names the
   prerequisite that plausibly explains a topic you're stuck on, and *ready to
-  learn* names what's cheapest to start next.
+  learn* names what's cheapest to start next. Prerequisites are editable from
+  the panel, and circular chains are refused at the database boundary.
 - **Analytics** — 30-day trends, consistency measured by days shown up rather
   than hours piled on, subject and category breakdowns.
 - **Daily Report** — assembled from records, with every figure labelled by

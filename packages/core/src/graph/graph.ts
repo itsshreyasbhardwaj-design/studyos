@@ -241,6 +241,81 @@ function layoutNodes(
 
 // ---------- analysis ----------
 
+/**
+ * Would adding `from → to` as a prerequisite close a loop?
+ *
+ * Edges run prerequisite → dependent, so the new edge creates a cycle exactly
+ * when `from` is already reachable from `to`. Only prerequisite edges are
+ * considered: `related` links carry no ordering, so they cannot form one.
+ *
+ * This is the check that keeps circular chains out of the data in the first
+ * place. `buildGraph` still detects cycles, because links predating this rule
+ * (or written directly to the database) can exist.
+ */
+export function wouldCreateCycle(
+  links: readonly TopicLink[],
+  fromTopicId: string,
+  toTopicId: string,
+): boolean {
+  if (fromTopicId === toTopicId) return true;
+
+  const dependents = new Map<string, string[]>();
+  for (const l of links) {
+    if (l.kind !== 'prerequisite') continue;
+    const list = dependents.get(l.fromTopicId);
+    if (list) list.push(l.toTopicId);
+    else dependents.set(l.fromTopicId, [l.toTopicId]);
+  }
+
+  // Walk forward from `to`; reaching `from` means the new edge closes a loop.
+  const seen = new Set<string>([toTopicId]);
+  const queue = [toTopicId];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (id === fromTopicId) return true;
+    for (const next of dependents.get(id) ?? []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Topics that may legally become a new prerequisite of `topicId` — excludes
+ * itself, anything already linked to it, and anything that would close a loop.
+ * Used to populate the editor so the UI cannot offer a choice that will fail.
+ */
+export function linkCandidates(
+  graph: KnowledgeGraph,
+  links: readonly TopicLink[],
+  topicId: string,
+  kind: LinkKind,
+  direction: 'requires' | 'unlocks' = 'requires',
+): GraphNode[] {
+  const existing = new Set(
+    links
+      .filter((l) => l.fromTopicId === topicId || l.toTopicId === topicId)
+      .map((l) => (l.fromTopicId === topicId ? l.toTopicId : l.fromTopicId)),
+  );
+
+  return graph.nodes
+    .filter((n) => n.topicId !== topicId && !existing.has(n.topicId))
+    .filter((n) => {
+      if (kind !== 'prerequisite') return true;
+      return direction === 'requires'
+        ? !wouldCreateCycle(links, n.topicId, topicId)
+        : !wouldCreateCycle(links, topicId, n.topicId);
+    })
+    .sort(
+      (a, b) =>
+        (a.subjectName ?? '').localeCompare(b.subjectName ?? '') ||
+        a.name.localeCompare(b.name),
+    );
+}
+
 export interface PrerequisiteGap {
   /** The topic that is struggling. */
   topicId: string;

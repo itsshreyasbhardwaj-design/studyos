@@ -96,6 +96,13 @@ the topic was known once and has decayed, and decayed knowledge is not a
 foundation to build on. Ranking it as solid would hide exactly the gaps this
 view exists to find.
 
+Circular prerequisite chains are refused at the **repository**, not in the
+form handler, so the rule holds for every caller. The editor additionally
+filters its own candidate list with the same pure function, so the UI never
+offers a choice that the write would reject — but the filter is a courtesy and
+the repository is the boundary. `buildGraph` still *detects* cycles, because
+links predating the rule, or written straight to the database, can exist.
+
 Layout is longest-path layering with stable tie-breaks, grouped into subject
 bands — so every prerequisite arrow points rightward, the same data always
 draws the same graph, and positions can be asserted in tests. No physics

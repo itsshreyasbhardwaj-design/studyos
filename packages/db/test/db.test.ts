@@ -470,3 +470,126 @@ test('deleting a topic removes its links, and account deletion clears them', () 
   const left = db.prepare('SELECT COUNT(*) AS n FROM topic_links').get() as { n: number };
   assert.equal(left.n, 0, 'account deletion left topic links behind');
 });
+
+test('a circular prerequisite chain is refused at the database boundary', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  const c = repo.createTopic(db, { subjectId, name: 'C' });
+
+  repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' });
+  repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: c.id, kind: 'prerequisite' });
+
+  const direct = repo.createTopicLink(db, userId, {
+    fromTopicId: b.id, toTopicId: a.id, kind: 'prerequisite',
+  });
+  assert.equal(direct.created, false);
+  assert.match(direct.reason!, /circular/);
+
+  const transitive = repo.createTopicLink(db, userId, {
+    fromTopicId: c.id, toTopicId: a.id, kind: 'prerequisite',
+  });
+  assert.equal(transitive.created, false, 'a long way round is still a loop');
+
+  assert.equal(repo.listTopicLinks(db, userId).length, 2, 'nothing was written');
+});
+
+test('a related link may run in both directions without being a cycle', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'related' }).created,
+    true,
+  );
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: a.id, kind: 'related' }).created,
+    true,
+  );
+});
+
+test('a forward shortcut alongside a chain is allowed', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  const c = repo.createTopic(db, { subjectId, name: 'C' });
+  repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' });
+  repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: c.id, kind: 'prerequisite' });
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: c.id, kind: 'prerequisite' })
+      .created,
+    true,
+    'a→c runs with the grain, not against it',
+  );
+});
+
+test('a cycle check on one user ignores another user\'s links', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  const mySubject = repo.createSubject(db, userId, { name: 'Mine' }).id;
+  const a = repo.createTopic(db, { subjectId: mySubject, name: 'A' });
+  const b = repo.createTopic(db, { subjectId: mySubject, name: 'B' });
+
+  const theirSubject = repo.createSubject(db, other.id, { name: 'Theirs' }).id;
+  const x = repo.createTopic(db, { subjectId: theirSubject, name: 'X' });
+  const y = repo.createTopic(db, { subjectId: theirSubject, name: 'Y' });
+  repo.createTopicLink(db, other.id, { fromTopicId: x.id, toTopicId: y.id, kind: 'prerequisite' });
+
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' })
+      .created,
+    true,
+  );
+});
+
+test('deleting a link frees the reverse direction', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  const link = { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' as const };
+
+  repo.createTopicLink(db, userId, link);
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: a.id, kind: 'prerequisite' })
+      .created,
+    false,
+  );
+
+  assert.equal(repo.deleteTopicLink(db, userId, link), true);
+  assert.equal(
+    repo.createTopicLink(db, userId, { fromTopicId: b.id, toTopicId: a.id, kind: 'prerequisite' })
+      .created,
+    true,
+    'with the original gone, the reverse is legal',
+  );
+});
+
+test('deleting a link that does not exist reports false', () => {
+  const { db, userId } = fresh();
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  assert.equal(
+    repo.deleteTopicLink(db, userId, {
+      fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite',
+    }),
+    false,
+  );
+});
+
+test('another user cannot delete your links', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  const { id: subjectId } = repo.createSubject(db, userId, { name: 'Maths' });
+  const a = repo.createTopic(db, { subjectId, name: 'A' });
+  const b = repo.createTopic(db, { subjectId, name: 'B' });
+  const link = { fromTopicId: a.id, toTopicId: b.id, kind: 'prerequisite' as const };
+  repo.createTopicLink(db, userId, link);
+
+  assert.equal(repo.deleteTopicLink(db, other.id, link), false);
+  assert.equal(repo.listTopicLinks(db, userId).length, 1, 'the link must survive');
+});

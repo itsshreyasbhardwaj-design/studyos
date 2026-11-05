@@ -122,3 +122,36 @@ export async function exportDataAction() {
   const dump = repo.exportUserData(db(), currentUserId());
   return JSON.stringify(dump, null, 2);
 }
+
+/**
+ * Knowledge-graph link editing.
+ *
+ * Validation (ownership, self-links, circular chains) lives in the repository
+ * rather than here, so it holds for every caller. These actions just report
+ * the refusal back to the UI instead of swallowing it.
+ */
+export async function linkTopicsAction(input: {
+  fromTopicId: string;
+  toTopicId: string;
+  kind: 'prerequisite' | 'related';
+}): Promise<{ ok: boolean; reason?: string }> {
+  const result = repo.createTopicLink(db(), currentUserId(), input);
+  if (!result.created) {
+    return { ok: false, reason: result.reason ?? 'that link already exists' };
+  }
+  revalidatePath('/graph');
+  revalidatePath('/subjects');
+  return { ok: true };
+}
+
+export async function unlinkTopicsAction(input: {
+  fromTopicId: string;
+  toTopicId: string;
+  kind: 'prerequisite' | 'related';
+}): Promise<{ ok: boolean; reason?: string }> {
+  const removed = repo.deleteTopicLink(db(), currentUserId(), input);
+  if (!removed) return { ok: false, reason: 'that link no longer exists' };
+  revalidatePath('/graph');
+  revalidatePath('/subjects');
+  return { ok: true };
+}

@@ -55,6 +55,8 @@ in a browser.
 | Knowledge graph | **Built** | Interactive SVG graph with deterministic layering, search, mastery filters, click-to-focus neighbourhood dimming, and a relations panel. |
 | Weak-prerequisite detection | **Built** | Reports a foundation gap only when the dependent topic *and* a prerequisite are both unsolid, so it never sends the user to revise the wrong thing. |
 | Ready-to-learn detection | **Built** | Not-yet-started topics whose prerequisites are all solid. |
+| Topic link editing | **Built** | Add/remove prerequisite and related links from the graph panel. Candidate lists exclude choices that would be refused. |
+| Circular-prerequisite prevention | **Built** | Enforced in the repository, so it holds for every caller — not just the UI. |
 | AI tutor | **Not built** | Requires a paid model API. See `docs/limitations.md` — this was a deliberate refusal, not an oversight. |
 | Master Notes / document ingestion | **Partial** | Notes with versioning and full-text search are built. PDF/DOCX parsing and RAG are not. |
 | AI oral examiner | **Not built** | Requires speech and model APIs. |

@@ -266,3 +266,73 @@ test('decayed knowledge does not count as a solid foundation', () => {
   assert.ok(MASTERY_STRENGTH.strong >= SOLID_STRENGTH);
   assert.ok(MASTERY_STRENGTH.mastered >= SOLID_STRENGTH);
 });
+
+// ---- cycle prevention ----
+
+import { wouldCreateCycle, linkCandidates } from '../src/graph/graph.ts';
+
+test('a direct back-edge is refused', () => {
+  const links = [prereq('a', 'b')];
+  assert.equal(wouldCreateCycle(links, 'b', 'a'), true, 'b→a closes the loop');
+  assert.equal(wouldCreateCycle(links, 'a', 'b'), false, 'the duplicate is not a cycle');
+});
+
+test('a back-edge across a long chain is refused', () => {
+  const links = [prereq('a', 'b'), prereq('b', 'c'), prereq('c', 'd')];
+  assert.equal(wouldCreateCycle(links, 'd', 'a'), true);
+  assert.equal(wouldCreateCycle(links, 'd', 'b'), true);
+  assert.equal(wouldCreateCycle(links, 'a', 'd'), false, 'a shortcut forward is fine');
+});
+
+test('a topic cannot become its own prerequisite', () => {
+  assert.equal(wouldCreateCycle([], 'a', 'a'), true);
+});
+
+test('unrelated branches are not treated as cycles', () => {
+  const links = [prereq('root', 'left'), prereq('root', 'right')];
+  assert.equal(wouldCreateCycle(links, 'left', 'right'), false);
+  assert.equal(wouldCreateCycle(links, 'right', 'left'), false);
+});
+
+test('related links carry no ordering, so they cannot form a cycle', () => {
+  const links: TopicLink[] = [
+    { fromTopicId: 'a', toTopicId: 'b', kind: 'related' },
+    { fromTopicId: 'b', toTopicId: 'c', kind: 'related' },
+  ];
+  assert.equal(wouldCreateCycle(links, 'c', 'a'), false);
+});
+
+test('cycle detection terminates on data that already contains a loop', () => {
+  const links = [prereq('x', 'y'), prereq('y', 'x')];
+  assert.equal(wouldCreateCycle(links, 'y', 'x'), true);
+  assert.equal(wouldCreateCycle(links, 'z', 'x'), false);
+});
+
+test('link candidates exclude self, existing links and cycle-forming choices', () => {
+  const topics = [
+    topic('a', 'strong'),
+    topic('b', 'learning'),
+    topic('c', 'learning'),
+    topic('free', 'learning'),
+  ];
+  const links = [prereq('a', 'b'), prereq('b', 'c')];
+  const g = buildGraph(topics, links);
+
+  // Adding a prerequisite TO 'a': anything downstream of 'a' would loop.
+  const requires = linkCandidates(g, links, 'a', 'prerequisite', 'requires').map((n) => n.topicId);
+  assert.ok(!requires.includes('a'), 'itself');
+  assert.ok(!requires.includes('b'), 'already linked');
+  assert.ok(!requires.includes('c'), 'c→a would close a loop');
+  assert.deepEqual(requires, ['free']);
+
+  // Adding something that 'a' unlocks: c is fine, it is already downstream.
+  const unlocks = linkCandidates(g, links, 'a', 'prerequisite', 'unlocks').map((n) => n.topicId);
+  assert.deepEqual(unlocks, ['c', 'free']);
+});
+
+test('related candidates are not filtered by reachability', () => {
+  const links = [prereq('a', 'b'), prereq('b', 'c')];
+  const g = buildGraph([topic('a', 'strong'), topic('b', 'learning'), topic('c', 'learning')], links);
+  const candidates = linkCandidates(g, links, 'c', 'related').map((n) => n.topicId);
+  assert.deepEqual(candidates, ['a'], 'b is already linked; a is free to relate');
+});

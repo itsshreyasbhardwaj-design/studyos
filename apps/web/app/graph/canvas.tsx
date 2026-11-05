@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import type { GraphEdge, GraphNode, MasteryState } from '@studyos/core';
-import { MASTERY_LABELS, SOLID_STRENGTH } from '@studyos/core';
+import { useMemo, useState, useTransition } from 'react';
+import type { GraphEdge, GraphNode, MasteryState, TopicLink } from '@studyos/core';
+import { MASTERY_LABELS, SOLID_STRENGTH, linkCandidates } from '@studyos/core';
+import { linkTopicsAction, unlinkTopicsAction } from '../actions.ts';
 
 const NODE_W = 168;
 const NODE_H = 50;
@@ -51,10 +52,44 @@ export function GraphCanvas({
   const [hidden, setHidden] = useState<Set<MasteryState>>(new Set());
   const [zoom, setZoom] = useState(1);
 
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
   const byId = useMemo(
     () => new Map(graph.nodes.map((n) => [n.topicId, n])),
     [graph.nodes],
   );
+
+  // The drawn edges are the links, so the editor needs no extra round trip.
+  const links = useMemo<TopicLink[]>(
+    () =>
+      graph.edges.map((e) => ({ fromTopicId: e.from, toTopicId: e.to, kind: e.kind })),
+    [graph.edges],
+  );
+
+  function runLinkChange(fn: () => Promise<{ ok: boolean; reason?: string }>) {
+    setError(null);
+    startTransition(async () => {
+      const result = await fn();
+      if (!result.ok) setError(result.reason ?? 'that change was refused');
+    });
+  }
+
+  function removeLink(otherId: string, relation: Relation) {
+    const link =
+      relation === 'related'
+        ? links.find(
+            (l) =>
+              l.kind === 'related' &&
+              ((l.fromTopicId === selected && l.toTopicId === otherId) ||
+                (l.fromTopicId === otherId && l.toTopicId === selected)),
+          )
+        : relation === 'requires'
+          ? { fromTopicId: otherId, toTopicId: selected!, kind: 'prerequisite' as const }
+          : { fromTopicId: selected!, toTopicId: otherId, kind: 'prerequisite' as const };
+    if (!link) return;
+    runLinkChange(() => unlinkTopicsAction(link));
+  }
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -322,19 +357,39 @@ export function GraphCanvas({
                 ids={selectedNode.prerequisiteIds}
                 byId={byId}
                 onPick={setSelected}
+                onRemove={(id) => removeLink(id, 'requires')}
+                disabled={pending}
               />
               <Relations
                 label="Unlocks"
                 ids={selectedNode.dependentIds}
                 byId={byId}
                 onPick={setSelected}
+                onRemove={(id) => removeLink(id, 'unlocks')}
+                disabled={pending}
               />
               <Relations
                 label="Related"
                 ids={selectedNode.relatedIds}
                 byId={byId}
                 onPick={setSelected}
+                onRemove={(id) => removeLink(id, 'related')}
+                disabled={pending}
               />
+
+              <LinkEditor
+                graph={graph}
+                links={links}
+                topicId={selectedNode.topicId}
+                pending={pending}
+                onAdd={(input) => runLinkChange(() => linkTopicsAction(input))}
+              />
+
+              {error && (
+                <p className="text-xs" style={{ color: 'var(--color-danger)' }}>
+                  {error}
+                </p>
+              )}
             </div>
           ) : (
             <div className="text-sm dim">
@@ -364,16 +419,22 @@ export function GraphCanvas({
   );
 }
 
+type Relation = 'requires' | 'unlocks' | 'related';
+
 function Relations({
   label,
   ids,
   byId,
   onPick,
+  onRemove,
+  disabled,
 }: {
   label: string;
   ids: string[];
   byId: Map<string, GraphNode>;
   onPick: (id: string) => void;
+  onRemove: (id: string) => void;
+  disabled: boolean;
 }) {
   if (ids.length === 0) return null;
   return (
@@ -385,19 +446,152 @@ function Relations({
           if (!node) return null;
           const weak = node.strength < SOLID_STRENGTH;
           return (
-            <li key={id}>
+            <li key={id} className="flex items-center justify-between gap-2">
               <button
                 onClick={() => onPick(id)}
-                className="text-left text-xs underline-offset-2 hover:underline"
+                className="min-w-0 flex-1 truncate text-left text-xs underline-offset-2 hover:underline"
                 style={{ color: weak ? TONE[node.state] : 'var(--text)' }}
               >
                 {node.name}
                 {weak ? ' ·  weak' : ''}
               </button>
+              <button
+                onClick={() => onRemove(id)}
+                disabled={disabled}
+                aria-label={`Remove link to ${node.name}`}
+                title="Remove this link"
+                className="shrink-0 px-1 text-xs disabled:opacity-40"
+                style={{ color: 'var(--text-dim)' }}
+              >
+                ✕
+              </button>
             </li>
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+const RELATION_OPTIONS: Array<{ id: Relation; label: string; hint: string }> = [
+  { id: 'requires', label: 'Requires first', hint: 'the chosen topic must be learned before this one' },
+  { id: 'unlocks', label: 'Unlocks', hint: 'this topic must be learned before the chosen one' },
+  { id: 'related', label: 'Related', hint: 'connected, with no ordering between them' },
+];
+
+/**
+ * Add a link from the selected topic.
+ *
+ * The candidate list is filtered by `linkCandidates`, so choices that would
+ * be refused — itself, an existing link, or anything that would close a
+ * circular prerequisite chain — are never offered. The database enforces the
+ * same rules independently; this just avoids presenting a dead end.
+ */
+function LinkEditor({
+  graph,
+  links,
+  topicId,
+  pending,
+  onAdd,
+}: {
+  graph: GraphData;
+  links: TopicLink[];
+  topicId: string;
+  pending: boolean;
+  onAdd: (input: {
+    fromTopicId: string;
+    toTopicId: string;
+    kind: 'prerequisite' | 'related';
+  }) => void;
+}) {
+  const [relation, setRelation] = useState<Relation>('requires');
+  const [choice, setChoice] = useState('');
+
+  const kind = relation === 'related' ? 'related' : 'prerequisite';
+  const candidates = useMemo(
+    () =>
+      linkCandidates(
+        graph,
+        links,
+        topicId,
+        kind,
+        relation === 'unlocks' ? 'unlocks' : 'requires',
+      ),
+    [graph, links, topicId, kind, relation],
+  );
+
+  // The selection is only valid for the relation it was made under.
+  const valid = candidates.some((c) => c.topicId === choice);
+
+  function submit() {
+    if (!valid) return;
+    onAdd({
+      fromTopicId: relation === 'unlocks' ? topicId : choice,
+      toTopicId: relation === 'unlocks' ? choice : topicId,
+      kind,
+    });
+    setChoice('');
+  }
+
+  return (
+    <div className="border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+      <div className="text-[11px] uppercase tracking-wide dim">Add a link</div>
+
+      <div className="mt-2 flex flex-wrap gap-1">
+        {RELATION_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            onClick={() => {
+              setRelation(option.id);
+              setChoice('');
+            }}
+            aria-pressed={relation === option.id}
+            title={option.hint}
+            className="rounded-md border px-2 py-1 text-[11px]"
+            style={{
+              borderColor: relation === option.id ? 'var(--color-accent)' : 'var(--border)',
+              color: relation === option.id ? 'var(--color-accent)' : 'var(--text-dim)',
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-1.5 text-[11px] dim">
+        {RELATION_OPTIONS.find((o) => o.id === relation)!.hint}
+      </p>
+
+      {candidates.length === 0 ? (
+        <p className="mt-2 text-[11px] dim">
+          No topic can be linked this way without creating a circular chain.
+        </p>
+      ) : (
+        <div className="mt-2 flex gap-1.5">
+          <select
+            value={choice}
+            onChange={(e) => setChoice(e.target.value)}
+            aria-label="Topic to link"
+            className="min-w-0 flex-1 rounded-md border px-2 py-1.5 text-xs"
+            style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+          >
+            <option value="">Choose a topic…</option>
+            {candidates.map((c) => (
+              <option key={c.topicId} value={c.topicId}>
+                {c.name} · {c.subjectName}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={submit}
+            disabled={!valid || pending}
+            className="rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-40"
+            style={{ background: 'var(--surface-hover)' }}
+          >
+            {pending ? '…' : 'Add'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

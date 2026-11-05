@@ -15,7 +15,7 @@ import type {
   Task,
   AvailabilityBlock,
 } from '@studyos/core';
-import { applyReview, DAY_MS, DEFAULT_PARAMS, type FsrsParams } from '@studyos/core';
+import { applyReview, wouldCreateCycle, DAY_MS, DEFAULT_PARAMS, type FsrsParams } from '@studyos/core';
 import type { RevisionCard } from '@studyos/core';
 import { newId, transaction, type Db } from './client.ts';
 
@@ -122,6 +122,19 @@ export function createTopicLink(
     )
     .get(userId, input.fromTopicId, input.toTopicId) as { n: number };
   if (owned.n < 2) return { created: false, reason: 'both topics must belong to this user' };
+
+  // Enforced here rather than in the UI, so the rule holds for every caller.
+  // A circular prerequisite chain has no valid ordering, which would make the
+  // graph's layering and the planner's dependency sort meaningless.
+  if (input.kind === 'prerequisite') {
+    const existing = listTopicLinks(db, userId);
+    if (wouldCreateCycle(existing, input.fromTopicId, input.toTopicId)) {
+      return {
+        created: false,
+        reason: 'that would create a circular prerequisite chain',
+      };
+    }
+  }
 
   const res = db
     .prepare(
