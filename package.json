@@ -1,0 +1,16 @@
+{
+  "name": "studyos",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-first study, revision and productivity operating system",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test packages/core/test/*.test.ts packages/db/test/*.test.ts",
+    "test:core": "node --test packages/core/test/*.test.ts",
+    "test:db": "node --test packages/db/test/*.test.ts",
+    "dev": "pnpm --filter @studyos/web dev",
+    "build": "pnpm --filter @studyos/web build"
+  }
+}

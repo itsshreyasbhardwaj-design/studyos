@@ -1,0 +1,8 @@
+{
+  "name": "@studyos/db",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "node:sqlite persistence, migrations and repositories for StudyOS",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@studyos/core": "workspace:*" }
+}

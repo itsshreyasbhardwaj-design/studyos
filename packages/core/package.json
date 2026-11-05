@@ -1,0 +1,16 @@
+{
+  "name": "@studyos/core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Zero-dependency domain engines: time aggregation, FSRS revision, planning, mastery, analytics",
+  "exports": {
+    ".": "./src/index.ts",
+    "./time": "./src/time/index.ts",
+    "./revision": "./src/revision/index.ts",
+    "./planning": "./src/planning/index.ts",
+    "./mastery": "./src/mastery/index.ts",
+    "./analytics": "./src/analytics/index.ts",
+    "./report": "./src/report/index.ts"
+  },
+  "dependencies": {}
+}

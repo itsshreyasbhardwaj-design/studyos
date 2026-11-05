@@ -1,0 +1,124 @@
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import * as repo from '@studyos/db';
+import { newId } from '@studyos/db';
+import type { ReviewGrade } from '@studyos/core';
+import { db, currentUserId } from '../lib/db.ts';
+
+export async function gradeCardAction(cardId: string, grade: number) {
+  const g = Math.min(Math.max(Math.round(grade), 1), 4) as ReviewGrade;
+  const result = repo.gradeCard(db(), currentUserId(), cardId, g);
+  revalidatePath('/revision');
+  revalidatePath('/');
+  return result ? { intervalDays: result.intervalDays } : { error: 'card not found' };
+}
+
+export async function completeTaskAction(taskId: string) {
+  repo.completeTask(db(), currentUserId(), taskId);
+  revalidatePath('/');
+  revalidatePath('/planner');
+}
+
+export async function reopenTaskAction(taskId: string) {
+  repo.reopenTask(db(), currentUserId(), taskId);
+  revalidatePath('/');
+  revalidatePath('/planner');
+}
+
+export async function createTaskAction(formData: FormData) {
+  const title = String(formData.get('title') ?? '').trim();
+  if (!title) return;
+  const estimate = Number(formData.get('estimateMin') ?? 30);
+  const subjectId = String(formData.get('subjectId') ?? '') || undefined;
+  const dueDate = String(formData.get('dueAt') ?? '');
+  repo.createTask(db(), currentUserId(), {
+    title,
+    estimateMin: Number.isFinite(estimate) && estimate > 0 ? estimate : 30,
+    priority: 2,
+    subjectId,
+    dueAt: dueDate ? new Date(`${dueDate}T23:59:59`).getTime() : undefined,
+  });
+  revalidatePath('/');
+  revalidatePath('/planner');
+}
+
+/**
+ * Save a finished focus session as a recorded activity event. Sessions logged
+ * through the UI are 'confirmed' — a human stated they happened — which is a
+ * different and higher-trust provenance than an OS-measured event.
+ */
+export async function saveFocusSessionAction(input: {
+  startedAt: number;
+  endedAt: number;
+  activeMs: number;
+  category: string;
+  subjectId?: string;
+  taskId?: string;
+  mode: string;
+  goal?: string;
+  reflection?: string;
+}) {
+  const conn = db();
+  const userId = currentUserId();
+  if (input.endedAt <= input.startedAt) return { error: 'session had no duration' };
+
+  const eventId = newId('evt');
+  repo.recordEvent(conn, userId, {
+    id: eventId,
+    deviceId: 'web',
+    startedAt: input.startedAt,
+    endedAt: input.endedAt,
+    activeMs: Math.min(input.activeMs, input.endedAt - input.startedAt),
+    category: input.category as never,
+    provenance: 'confirmed',
+    subjectId: input.subjectId,
+    taskId: input.taskId,
+    note: input.goal,
+  });
+  conn
+    .prepare(
+      `INSERT INTO focus_sessions (id, user_id, event_id, mode, goal, reflection, started_at, ended_at, interrupted)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    )
+    .run(
+      newId('fcs'),
+      userId,
+      eventId,
+      input.mode,
+      input.goal ?? null,
+      input.reflection ?? null,
+      input.startedAt,
+      input.endedAt,
+    );
+  revalidatePath('/');
+  revalidatePath('/analytics');
+  return { ok: true, minutes: Math.round((input.endedAt - input.startedAt) / 60000) };
+}
+
+export async function recordAttemptAction(
+  topicId: string,
+  correct: boolean,
+  errorCategory?: string,
+) {
+  repo.recordAttempt(db(), currentUserId(), {
+    topicId,
+    attemptedAt: Date.now(),
+    correct,
+    errorCategory,
+  });
+  revalidatePath('/subjects');
+  revalidatePath('/');
+}
+
+export async function resolveMistakeAction(mistakeId: string) {
+  repo.resolveMistake(db(), currentUserId(), mistakeId);
+  revalidatePath('/revision');
+  revalidatePath('/subjects');
+}
+
+/** Full data export. The privacy promise has to be executable, not a policy. */
+export async function exportDataAction() {
+  const dump = repo.exportUserData(db(), currentUserId());
+  return JSON.stringify(dump, null, 2);
+}
