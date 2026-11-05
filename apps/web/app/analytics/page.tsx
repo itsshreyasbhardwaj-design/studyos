@@ -61,7 +61,7 @@ export default function AnalyticsPage() {
                 key={p.window.from}
                 className="group relative flex-1"
                 style={{ height: '100%', display: 'flex', alignItems: 'flex-end' }}
-                title={`${new Date(p.window.from).toLocaleDateString()} · ${formatMin(p.productiveMinutes)}${
+                title={`${new Date(p.window.from).toLocaleDateString('en-GB')} · ${formatMin(p.productiveMinutes)}${
                   p.accuracy !== undefined ? ` · ${(p.accuracy * 100).toFixed(0)}% accuracy` : ''
                 }`}
               >
@@ -79,7 +79,7 @@ export default function AnalyticsPage() {
           })}
         </div>
         <div className="mt-3 flex justify-between text-xs dim">
-          <span>{new Date(d.trend[0]?.window.from ?? d.now).toLocaleDateString()}</span>
+          <span>{new Date(d.trend[0]?.window.from ?? d.now).toLocaleDateString('en-GB')}</span>
           <span>peak {formatMin(maxMinutes)}</span>
           <span>today</span>
         </div>

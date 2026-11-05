@@ -283,14 +283,57 @@ function seedIfEmpty(conn: Db): void {
   }
   repo.setAvailability(conn, user.id, blocks, { from: now - DAY_MS, to: now + 8 * DAY_MS });
 
-  repo.createNote(conn, user.id, {
-    title: 'Momentum: what I keep getting wrong',
-    body: 'In collision questions, write the momentum equation before touching energy. Elastic means kinetic energy is conserved as well as momentum; inelastic means only momentum. The sign convention has to be fixed before substituting numbers — that is where the marks go.',
-    topicId: topicIds['Physics HL/Forces and momentum'],
-  });
-  repo.createNote(conn, user.id, {
-    title: 'Integration by parts',
-    body: 'Choose u by LIATE: logarithmic, inverse trig, algebraic, trigonometric, exponential. Differentiate the earlier one. Always add the constant of integration.',
-    topicId: topicIds['Mathematics AA HL/Integration'],
-  });
+  const notes: Array<{ title: string; body: string; topic?: string }> = [
+    {
+      title: 'Momentum: what I keep getting wrong',
+      body: 'In collision questions, write the momentum equation before touching energy. Elastic means kinetic energy is conserved as well as momentum; inelastic means only momentum. The sign convention has to be fixed before substituting numbers — that is where the marks go.',
+      topic: 'Physics HL/Forces and momentum',
+    },
+    {
+      title: 'Integration by parts',
+      body: 'Choose u by LIATE: logarithmic, inverse trig, algebraic, trigonometric, exponential. Differentiate the earlier one. Always add the constant of integration.',
+      topic: 'Mathematics AA HL/Integration',
+    },
+    {
+      title: 'Projectile motion',
+      body: 'Horizontal and vertical motion are independent; the only quantity they share is time.\n\nMy error was carrying g into the horizontal component. Horizontal velocity is constant, vertical acceleration is g downward. For range: solve the vertical equation for flight time, then multiply by horizontal velocity. Not in one step.',
+      topic: 'Physics HL/Kinematics',
+    },
+    {
+      title: 'Recursion: base case first',
+      body: 'Write the base case before the recursive case, every time. Every infinite recursion I have written was a missing or unreachable base case, not a wrong recursive step.\n\nFor trees the base case is the null node, not the leaf.',
+      topic: 'Computer Science HL/Recursion',
+    },
+    {
+      title: 'PED and total revenue',
+      body: 'Elastic demand (PED > 1): a price rise lowers total revenue. Inelastic (PED < 1): a price rise raises it. Unit elastic is the revenue maximum.\n\nPED is negative for normal demand, so compare magnitudes, not signed values.',
+      topic: 'Economics SL/Elasticity',
+    },
+    {
+      // Unattached on purpose: not every note belongs to a syllabus topic.
+      title: 'Study log — week of 2 Nov',
+      body: 'Mon: differentiation drills, fine.\nTue: momentum lab data, took longer than planned.\nWed: integration by parts, struggled.\nThu: revision queue only.\n\nPattern worth watching: the topics I avoid are the ones with the oldest cards.',
+    },
+  ];
+  for (const note of notes) {
+    repo.createNote(conn, user.id, {
+      title: note.title,
+      body: note.body,
+      topicId: note.topic ? topicIds[note.topic] : undefined,
+    });
+  }
+
+  // One note revised twice, so version history is populated rather than an
+  // empty panel on a feature whose whole point is that edits are recoverable.
+  const projectile = repo.listNotes(conn, user.id).find((n) => n.title === 'Projectile motion');
+  if (projectile) {
+    repo.updateNote(conn, user.id, projectile.id, {
+      body: `${projectile.body}\n\nAfter the mock: check whether launch and landing heights are equal before using the symmetric range formula. Usually they are not.`,
+    });
+    const current = repo.getNote(conn, user.id, projectile.id)!;
+    repo.updateNote(conn, user.id, projectile.id, {
+      title: 'Projectile motion — what I kept getting wrong',
+      body: `${current.body}\n\nWorked a past paper with a cliff launch and got it right by splitting the fall into two phases.`,
+    });
+  }
 }

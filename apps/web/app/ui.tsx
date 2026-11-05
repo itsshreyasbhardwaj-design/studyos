@@ -104,6 +104,15 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+/**
+ * Dates are formatted in one fixed locale rather than the viewer's. An empty
+ * locale list resolves on the server to the host's locale and in the browser
+ * to the visitor's, so the same timestamp renders two different strings and
+ * every date in a client component fails hydration. Times still use the host
+ * offset — see docs/limitations.md.
+ */
+const LOCALE = 'en-GB';
+
 export function formatMin(min: number): string {
   if (min <= 0) return '0m';
   if (min < 60) return `${min}m`;
@@ -113,11 +122,11 @@ export function formatMin(min: number): string {
 }
 
 export function formatTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' });
 }
 
 export function formatDay(ts: number): string {
-  return new Date(ts).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  return new Date(ts).toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
 }
 
 export function relativeDays(ts: number, now: number): string {

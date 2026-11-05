@@ -376,3 +376,47 @@ export function loadReport(now = Date.now()) {
     ),
   };
 }
+
+/**
+ * The notes workspace. A query runs full-text search and narrows the list to
+ * the hits, in rank order, so the same page serves browsing and searching.
+ */
+export function loadNotes(query?: string, selectedId?: string) {
+  const conn = db();
+  const userId = currentUserId();
+
+  const all = repo.listNotes(conn, userId);
+  const trimmed = (query ?? '').trim();
+  const hits = trimmed ? repo.searchNotes(conn, userId, trimmed) : undefined;
+
+  let notes = all;
+  if (hits) {
+    const snippets = new Map(hits.map((h) => [h.id, h.snippet]));
+    const byId = new Map(all.map((n) => [n.id, n]));
+    notes = hits.flatMap((h) => {
+      const note = byId.get(h.id);
+      return note ? [{ ...note, snippet: snippets.get(h.id) }] : [];
+    });
+  }
+
+  const selected = selectedId
+    ? repo.getNote(conn, userId, selectedId)
+    : (notes[0] && repo.getNote(conn, userId, notes[0].id)) || undefined;
+
+  const subjects = repo.listSubjects(conn, userId);
+  const topics = repo.listTopics(conn, userId).map((t) => ({
+    id: t.id,
+    name: t.name,
+    subject: subjects.find((s) => s.id === t.subject_id)?.name ?? '',
+  }));
+
+  return {
+    notes,
+    total: all.length,
+    query: trimmed,
+    searched: hits !== undefined,
+    selected,
+    history: selected ? repo.listNoteHistory(conn, userId, selected.id) : [],
+    topics,
+  };
+}

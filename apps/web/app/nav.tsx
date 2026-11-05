@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/subjects', label: 'Subjects' },
   { href: '/revision', label: 'Revision' },
   { href: '/graph', label: 'Knowledge Graph' },
+  { href: '/notes', label: 'Notes' },
   { href: '/analytics', label: 'Analytics' },
   { href: '/report', label: 'Daily Report' },
 ];

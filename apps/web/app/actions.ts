@@ -155,3 +155,34 @@ export async function unlinkTopicsAction(input: {
   revalidatePath('/subjects');
   return { ok: true };
 }
+
+export async function createNoteAction(formData: FormData): Promise<{ id?: string }> {
+  const title = String(formData.get('title') ?? '').trim();
+  if (!title) return {};
+  const topicId = String(formData.get('topicId') ?? '') || undefined;
+  const { id } = repo.createNote(db(), currentUserId(), { title, topicId, body: '' });
+  revalidatePath('/notes');
+  return { id };
+}
+
+export async function updateNoteAction(input: {
+  noteId: string;
+  body?: string;
+  title?: string;
+  topicId?: string | null;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const { noteId, ...patch } = input;
+  if (patch.title !== undefined && !patch.title.trim()) {
+    return { ok: false, reason: 'a note needs a title' };
+  }
+  const ok = repo.updateNote(db(), currentUserId(), noteId, patch);
+  if (!ok) return { ok: false, reason: 'that note could not be saved' };
+  revalidatePath('/notes');
+  return { ok: true };
+}
+
+export async function deleteNoteAction(noteId: string): Promise<{ ok: boolean }> {
+  const ok = repo.deleteNote(db(), currentUserId(), noteId);
+  revalidatePath('/notes');
+  return { ok };
+}

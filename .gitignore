@@ -8,3 +8,5 @@ out/
 .env.local
 .DS_Store
 dist/
+*.db-shm
+*.tsbuildinfo

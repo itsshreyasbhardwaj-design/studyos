@@ -115,7 +115,18 @@ simulation, and no 3D: neither would add information.
   test asserts the cascade works.
 - Activity events are append-only. A correction inserts a superseding row and
   writes an audit entry; reads filter superseded rows. History stays auditable.
-- Note edits snapshot the previous body before overwriting.
+- Note edits snapshot the previous body before overwriting. A retitle or a
+  reattach does not snapshot — there is no writing to lose — so history stays
+  a record of the text, not of every field touched.
+- Search input never reaches FTS5 as typed. `ftsQuery` splits it on the same
+  character classes the `unicode61` tokeniser uses and requotes each token, so
+  the query language is unreachable from the search box: FTS5 syntax in the
+  input is matched as text rather than parsed, and nothing a user types is a
+  syntax error. A one-character token is matched exactly rather than as a
+  prefix, because prefix-matching one letter returns most of the corpus ranked
+  as though it were relevant.
+- A note's topic is checked for ownership on write. The foreign key proves the
+  topic exists; only the ownership check proves it is the writer's.
 - The offline mutation queue is idempotent on `(device_id, seq)`, which makes
   at-least-once delivery safe.
 

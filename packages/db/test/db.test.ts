@@ -198,8 +198,8 @@ test('a correct answer opens no mistake entry', () => {
 test('note edits are versioned, never destructive', () => {
   const { db, userId } = fresh();
   const { id } = repo.createNote(db, userId, { title: 'Vectors', body: 'first draft' });
-  repo.updateNote(db, userId, id, 'second draft');
-  repo.updateNote(db, userId, id, 'third draft');
+  repo.updateNote(db, userId, id, { body: 'second draft' });
+  repo.updateNote(db, userId, id, { body: 'third draft' });
   const row = db.prepare('SELECT body FROM notes WHERE id = ?').get(id) as { body: string };
   assert.equal(row.body, 'third draft');
   assert.equal(repo.listNoteVersions(db, userId, id), 2, 'both prior bodies must be recoverable');
@@ -212,7 +212,7 @@ test('full-text search finds notes and stays in sync with edits', () => {
     body: 'horizontal velocity is constant',
   });
   assert.equal(repo.searchNotes(db, userId, 'horizontal').length, 1);
-  repo.updateNote(db, userId, id, 'vertical acceleration is g');
+  repo.updateNote(db, userId, id, { body: 'vertical acceleration is g' });
   assert.equal(repo.searchNotes(db, userId, 'horizontal').length, 0, 'stale index');
   assert.equal(repo.searchNotes(db, userId, 'acceleration').length, 1);
 });
@@ -228,6 +228,109 @@ test('an empty search query returns nothing instead of everything', () => {
   const { db, userId } = fresh();
   repo.createNote(db, userId, { title: 'A', body: 'b' });
   assert.deepEqual(repo.searchNotes(db, userId, '   '), []);
+});
+
+test('a search box cannot be made to throw by what a student types', () => {
+  const { db, userId } = fresh();
+  repo.createNote(db, userId, {
+    title: 'Vectors in C++',
+    body: 'dot product AND cross product, NEAR the origin (3D)',
+  });
+  // Each of these is a syntax error, an unterminated string or a bogus column
+  // reference if handed to FTS5 MATCH as typed.
+  for (const query of ['C++', 'what?', '"unclosed', 'foo:', 'AND', '*', 'NEAR', '-x', 'a OR', '((']) {
+    assert.doesNotThrow(() => repo.searchNotes(db, userId, query), `query ${query} threw`);
+  }
+});
+
+test('operator words are searched as words, not parsed as operators', () => {
+  const { db, userId } = fresh();
+  repo.createNote(db, userId, { title: 'Logic', body: 'the AND gate and the NEAR miss' });
+  repo.createNote(db, userId, { title: 'Optics', body: 'refraction at a boundary' });
+  assert.equal(repo.searchNotes(db, userId, 'AND gate').length, 1);
+  assert.equal(repo.searchNotes(db, userId, 'NEAR miss').length, 1);
+  assert.equal(repo.searchNotes(db, userId, 'NEAR boundary').length, 0, 'must not match across notes');
+});
+
+test('punctuation-only input is no query, not a match-everything query', () => {
+  const { db, userId } = fresh();
+  repo.createNote(db, userId, { title: 'A', body: 'b' });
+  for (const query of ['', '   ', '!!!', '...', '-']) {
+    assert.deepEqual(repo.searchNotes(db, userId, query), [], `query ${JSON.stringify(query)}`);
+  }
+});
+
+test('search narrows as the last word is typed', () => {
+  const { db, userId } = fresh();
+  repo.createNote(db, userId, { title: 'Momentum', body: 'conservation of momentum' });
+  assert.equal(repo.searchNotes(db, userId, 'cons').length, 1, 'prefix of the last token');
+  assert.equal(repo.searchNotes(db, userId, 'cons momentum').length, 0, 'earlier tokens are exact');
+  assert.equal(repo.searchNotes(db, userId, 'c').length, 0, 'one character is not a wildcard');
+});
+
+test('retitling a note does not manufacture a version', () => {
+  const { db, userId } = fresh();
+  const { id } = repo.createNote(db, userId, { title: 'Draft', body: 'body text' });
+  repo.updateNote(db, userId, id, { title: 'Projectiles' });
+  assert.equal(repo.listNoteVersions(db, userId, id), 0, 'no body change, no snapshot');
+  assert.equal(repo.getNote(db, userId, id)?.title, 'Projectiles');
+  assert.equal(repo.searchNotes(db, userId, 'Projectiles').length, 1, 'index follows the title');
+});
+
+test('a note cannot be attached to another user\'s topic', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  const subject = repo.createSubject(db, other.id, { name: 'Theirs' });
+  const topic = repo.createTopic(db, { subjectId: subject.id, name: 'Their topic' });
+
+  const { id } = repo.createNote(db, userId, { title: 'Mine', body: 'x', topicId: topic.id });
+  assert.equal(repo.getNote(db, userId, id)?.topicId, undefined, 'topic must be dropped');
+  assert.equal(repo.updateNote(db, userId, id, { topicId: topic.id }), false, 'and refused on edit');
+});
+
+test('a note carries its topic name for display', () => {
+  const { db, userId } = fresh();
+  const subject = repo.createSubject(db, userId, { name: 'Physics HL' });
+  const topic = repo.createTopic(db, { subjectId: subject.id, name: 'Kinematics' });
+  const { id } = repo.createNote(db, userId, { title: 'N', body: 'x', topicId: topic.id });
+  assert.equal(repo.getNote(db, userId, id)?.topicName, 'Kinematics');
+  assert.equal(repo.listNotes(db, userId)[0].topicName, 'Kinematics');
+});
+
+test('deleting a note clears its versions and its search index', () => {
+  const { db, userId } = fresh();
+  const { id } = repo.createNote(db, userId, { title: 'Temporary', body: 'first' });
+  repo.updateNote(db, userId, id, { body: 'second' });
+  assert.equal(repo.searchNotes(db, userId, 'second').length, 1);
+
+  assert.equal(repo.deleteNote(db, userId, id), true);
+  assert.deepEqual(repo.searchNotes(db, userId, 'second'), [], 'index must not outlive the note');
+  const versions = db.prepare('SELECT COUNT(*) AS n FROM note_versions').get() as { n: number };
+  assert.equal(versions.n, 0);
+  assert.equal(repo.deleteNote(db, userId, id), false, 'deleting twice is not a success');
+});
+
+test('another user cannot read, edit or delete your notes', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  const { id } = repo.createNote(db, userId, { title: 'Mine', body: 'private' });
+
+  assert.equal(repo.getNote(db, other.id, id), undefined);
+  assert.deepEqual(repo.listNotes(db, other.id), []);
+  assert.equal(repo.updateNote(db, other.id, id, { body: 'tampered' }), false);
+  assert.equal(repo.deleteNote(db, other.id, id), false);
+  assert.deepEqual(repo.listNoteHistory(db, other.id, id), []);
+  assert.equal(repo.getNote(db, userId, id)?.body, 'private', 'untouched');
+});
+
+test('note history returns superseded bodies, newest first', () => {
+  const { db, userId } = fresh();
+  const { id } = repo.createNote(db, userId, { title: 'N', body: 'v1' });
+  repo.updateNote(db, userId, id, { body: 'v2' });
+  repo.updateNote(db, userId, id, { body: 'v3' });
+  const history = repo.listNoteHistory(db, userId, id);
+  assert.deepEqual(history.map((h) => h.body), ['v2', 'v1']);
+  assert.equal(repo.getNote(db, userId, id)?.body, 'v3', 'current body is not in history');
 });
 
 test('replaying an offline mutation is a no-op, not a duplicate', () => {
@@ -293,7 +396,7 @@ test('account deletion removes every row belonging to that user', () => {
   });
   repo.recordAttempt(db, userId, { topicId, attemptedAt: NOW, correct: false });
   const { id: noteId } = repo.createNote(db, userId, { title: 'N', body: 'b' });
-  repo.updateNote(db, userId, noteId, 'b2');
+  repo.updateNote(db, userId, noteId, { body: 'b2' });
   repo.enqueueMutation(db, userId, { deviceId: 'phone', seq: 1, entity: 'task', op: 'upsert', payload: {} });
 
   assert.ok(repo.residualRowCount(db, userId) > 0, 'precondition: data exists');

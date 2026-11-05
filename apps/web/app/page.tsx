@@ -28,7 +28,7 @@ export default function CommandCenter() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Command Center</h1>
           <p className="text-sm dim mt-1">
-            {new Date(d.now).toLocaleDateString([], {
+            {new Date(d.now).toLocaleDateString('en-GB', {
               weekday: 'long',
               day: 'numeric',
               month: 'long',

@@ -18,6 +18,7 @@ import type {
 import { applyReview, wouldCreateCycle, DAY_MS, DEFAULT_PARAMS, type FsrsParams } from '@studyos/core';
 import type { RevisionCard } from '@studyos/core';
 import { newId, transaction, type Db } from './client.ts';
+import { ftsQuery } from './fts.ts';
 
 // ---------- users, subjects, topics ----------
 
@@ -107,6 +108,16 @@ export function listTopics(
  * `toTopicId`. Both topics must belong to `userId`, so a link can never be
  * used to reach across accounts.
  */
+function ownsTopic(db: Db, userId: string, topicId: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT 1 AS ok FROM topics t JOIN subjects s ON s.id = t.subject_id
+       WHERE t.id = ? AND s.user_id = ?`,
+    )
+    .get(topicId, userId);
+  return row !== undefined;
+}
+
 export function createTopicLink(
   db: Db,
   userId: string,
@@ -711,39 +722,102 @@ export function createNote(
 ): { id: string } {
   const id = newId('nte');
   const now = Date.now();
+  // The foreign key proves the topic exists; only this proves it is yours.
+  const topicId = input.topicId && ownsTopic(db, userId, input.topicId) ? input.topicId : null;
   db.prepare(
     `INSERT INTO notes (id, user_id, topic_id, title, body, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, userId, input.topicId ?? null, input.title, input.body ?? '', now, now);
+  ).run(id, userId, topicId, input.title, input.body ?? '', now, now);
   return { id };
 }
 
-export function updateNote(db: Db, userId: string, noteId: string, body: string): boolean {
+/**
+ * Edit a note. A body change snapshots the previous body first, so edits are
+ * never destructive. Retitling or reattaching does not snapshot: there is
+ * nothing of the user's writing to lose.
+ */
+export function updateNote(
+  db: Db,
+  userId: string,
+  noteId: string,
+  patch: { body?: string; title?: string; topicId?: string | null },
+): boolean {
   const existing = db
-    .prepare('SELECT body FROM notes WHERE id = ? AND user_id = ?')
-    .get(noteId, userId) as { body: string } | undefined;
+    .prepare('SELECT body, title, topic_id FROM notes WHERE id = ? AND user_id = ?')
+    .get(noteId, userId) as { body: string; title: string; topic_id: string | null } | undefined;
   if (!existing) return false;
+
+  const body = patch.body ?? existing.body;
+  const title = patch.title ?? existing.title;
+  const topicId = patch.topicId === undefined ? existing.topic_id : patch.topicId;
+
+  if (topicId !== null && topicId !== existing.topic_id && !ownsTopic(db, userId, topicId)) {
+    return false;
+  }
+
   return transaction(db, () => {
-    // Snapshot the previous body first, so edits are never destructive.
+    if (body !== existing.body) {
+      db.prepare(
+        'INSERT INTO note_versions (id, note_id, body, created_at) VALUES (?, ?, ?, ?)',
+      ).run(newId('nve'), noteId, existing.body, Date.now());
+    }
     db.prepare(
-      'INSERT INTO note_versions (id, note_id, body, created_at) VALUES (?, ?, ?, ?)',
-    ).run(newId('nve'), noteId, existing.body, Date.now());
-    db.prepare('UPDATE notes SET body = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(
-      body,
-      Date.now(),
-      noteId,
-      userId,
-    );
+      'UPDATE notes SET body = ?, title = ?, topic_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+    ).run(body, title, topicId, Date.now(), noteId, userId);
     return true;
   });
 }
 
+/** Deleting a note takes its versions and its search index entries with it. */
+export function deleteNote(db: Db, userId: string, noteId: string): boolean {
+  const res = db.prepare('DELETE FROM notes WHERE id = ? AND user_id = ?').run(noteId, userId);
+  return Number(res.changes) > 0;
+}
+
+export interface NoteRow {
+  id: string;
+  title: string;
+  body: string;
+  topicId?: string;
+  topicName?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export function listNotes(db: Db, userId: string): NoteRow[] {
+  const rows = db
+    .prepare(
+      `SELECT n.id, n.title, n.body, n.topic_id, t.name AS topic_name, n.created_at, n.updated_at
+       FROM notes n LEFT JOIN topics t ON t.id = n.topic_id
+       WHERE n.user_id = ? ORDER BY n.updated_at DESC`,
+    )
+    .all(userId) as Array<Record<string, unknown>>;
+  return rows.map(toNoteRow);
+}
+
+export function getNote(db: Db, userId: string, noteId: string): NoteRow | undefined {
+  const row = db
+    .prepare(
+      `SELECT n.id, n.title, n.body, n.topic_id, t.name AS topic_name, n.created_at, n.updated_at
+       FROM notes n LEFT JOIN topics t ON t.id = n.topic_id
+       WHERE n.id = ? AND n.user_id = ?`,
+    )
+    .get(noteId, userId) as Record<string, unknown> | undefined;
+  return row ? toNoteRow(row) : undefined;
+}
+
+/**
+ * Full-text search. The query is rebuilt by `ftsQuery` rather than passed to
+ * MATCH as typed — see fts.ts for why that is a correctness requirement and
+ * not a nicety.
+ */
 export function searchNotes(
   db: Db,
   userId: string,
   query: string,
 ): Array<{ id: string; title: string; snippet: string }> {
-  if (!query.trim()) return [];
+  const match = ftsQuery(query);
+  if (match === undefined) return [];
   return db
     .prepare(
       `SELECT n.id, n.title, snippet(notes_fts, 1, '[', ']', '…', 12) AS snippet
@@ -751,7 +825,35 @@ export function searchNotes(
        WHERE notes_fts MATCH ? AND n.user_id = ?
        ORDER BY rank LIMIT 25`,
     )
-    .all(query, userId) as any;
+    .all(match, userId) as any;
+}
+
+/** The superseded bodies of a note, newest first. */
+export function listNoteHistory(
+  db: Db,
+  userId: string,
+  noteId: string,
+): Array<{ id: string; body: string; createdAt: number }> {
+  const rows = db
+    .prepare(
+      `SELECT v.id, v.body, v.created_at FROM note_versions v
+       JOIN notes n ON n.id = v.note_id
+       WHERE v.note_id = ? AND n.user_id = ? ORDER BY v.created_at DESC`,
+    )
+    .all(noteId, userId) as Array<{ id: string; body: string; created_at: number }>;
+  return rows.map((r) => ({ id: r.id, body: r.body, createdAt: r.created_at }));
+}
+
+function toNoteRow(row: Record<string, unknown>): NoteRow {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    body: row.body as string,
+    topicId: (row.topic_id as string | null) ?? undefined,
+    topicName: (row.topic_name as string | null) ?? undefined,
+    createdAt: row.created_at as number,
+    updatedAt: row.updated_at as number,
+  };
 }
 
 export function listNoteVersions(db: Db, userId: string, noteId: string): number {

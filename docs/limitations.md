@@ -66,6 +66,18 @@ already handles multiple simultaneous devices.
 - **Time zones are handled by host offset.** `dayWindow` uses the host's offset.
   A user crossing time zones mid-day will see day boundaries shift. The schema
   stores a per-user timezone, but it is not yet threaded through the analytics.
+  Dates are also rendered in one fixed locale (`en-GB`) rather than the
+  viewer's: a viewer-dependent format cannot be rendered on the server and the
+  client without disagreeing, which breaks hydration.
+- **Search is word-based, not semantic.** Notes are indexed by FTS5's
+  `unicode61` tokeniser, so a query finds notes containing those words, not
+  notes about that idea. Queries are tokenised and requoted before they reach
+  `MATCH` (see `packages/db/src/fts.ts`) — handing FTS5 raw input makes `C++`,
+  `what?` and a stray quote hard errors, and silently reads `NEAR` as an
+  operator. Punctuation is dropped, so symbol-only searches find nothing.
+- **Notes are plain text.** No formatting, no attachments, no equations. Every
+  edit keeps the body it replaced, but history is a list of full snapshots
+  rather than a diff, and there is no branching or merge.
 - **Topic links are authored, not inferred.** Prerequisites can be added and
   removed from the graph's side panel, and circular chains are refused at the
   database boundary. But nothing *derives* the edges from a syllabus — the
@@ -81,7 +93,7 @@ already handles multiple simultaneous devices.
 
 ## What was verified, and how
 
-- 155 automated tests across the core and database packages, all passing
+- 170 automated tests across the core and database packages, all passing
   (`pnpm test`).
 - The web app was built (`next build`, TypeScript checks passing) and driven in
   a real browser: every route rendered, a flashcard was graded through the UI,
