@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before setup-node, which needs pnpm on PATH to resolve its cache.
+      # The version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 24 is a requirement, not a preference: the domain packages ship
+          # .ts source with no build step and are run through Node's type
+          # stripping. There is no compiled artefact to fall back to.
+          node-version: 24
+          cache: pnpm
+
+      # Fails if the lockfile and the manifests have drifted apart.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test
+
+      # next build type-checks the whole app, which `pnpm test` does not:
+      # the domain packages are tested directly from source.
+      - run: pnpm build

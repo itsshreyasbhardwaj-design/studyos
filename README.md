@@ -1,5 +1,7 @@
 # StudyOS
 
+[![CI](https://github.com/itsshreyasbhardwaj-design/studyos/actions/workflows/ci.yml/badge.svg)](https://github.com/itsshreyasbhardwaj-design/studyos/actions/workflows/ci.yml)
+
 A local-first study, revision and productivity system. Plans your work from real
 deadlines, tracks time without double-counting it, schedules revision with FSRS,
 and separates *time spent* from *learning demonstrated* — structurally, not just
