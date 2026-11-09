@@ -326,4 +326,18 @@ export const MIGRATIONS: readonly Migration[] = [
     );
     `,
   },
+  {
+    id: '004_stability_scale',
+    sql: `
+    -- The durability multiplier fitted from the user's own review log. 1 is
+    -- the published model. Stored beside the weights rather than inside
+    -- weights_json because it is not one of the 17 — it is applied at every
+    -- prediction, which is what makes it identifiable from a log at all.
+    ALTER TABLE revision_params ADD COLUMN stability_scale REAL NOT NULL DEFAULT 1;
+    -- What the fit was based on, so a stored correction can always be traced
+    -- back to the evidence that justified it.
+    ALTER TABLE revision_params ADD COLUMN fitted_from_reviews INTEGER;
+    ALTER TABLE revision_params ADD COLUMN fitted_interval_json TEXT;
+    `,
+  },
 ];

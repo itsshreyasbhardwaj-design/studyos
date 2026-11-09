@@ -2,7 +2,7 @@ import 'server-only';
 import path from 'node:path';
 import { openDb, type Db } from '@studyos/db';
 import * as repo from '@studyos/db';
-import { DAY_MS } from '@studyos/core';
+import { DAY_MS, applyReview, retrievability, DEFAULT_PARAMS, type RevisionState } from '@studyos/core';
 
 /**
  * One SQLite connection per server process. The file lives in the repo root by
@@ -81,16 +81,89 @@ function seedIfEmpty(conn: Db): void {
    * rather than being written into the database as a label. Days are offsets
    * back from now; grades are Again(1)/Hard(2)/Good(3).
    */
-  const REVIEW_HISTORY: Record<Profile, Array<[number, 1 | 2 | 3]>> = {
-    mastered: [[70, 3], [50, 3], [22, 3], [3, 3]],
-    strong: [[60, 3], [40, 3], [16, 3], [4, 3]],
-    practising: [[35, 3], [14, 3], [5, 3]],
-    learning: [[24, 2], [7, 2]],
-    // Reviewed, then lapsed, then left alone: low stability and long elapsed
-    // time, which is what actually drives retention below the floor.
-    needs_revision: [[55, 3], [38, 1]],
-    not_started: [],
+  /**
+   * When this student studied each topic, in days ago: [started, last review].
+   *
+   * Mastery differences are expressed as *history*, not as planted outcomes.
+   * A topic needing revision is one they stopped reviewing six weeks ago; a
+   * mastered one is a topic they have kept up for a year. That is how the
+   * difference really arises, and it keeps one generative process behind the
+   * whole log — a hand-written outcome at 99% predicted recall would quietly
+   * corrupt the calibration sample it also feeds.
+   */
+  const REVIEW_WINDOW: Record<Profile, [number, number] | undefined> = {
+    mastered: [420, 2],
+    strong: [400, 5],
+    practising: [300, 7],
+    // Started late in the year, so few reps and little stability built up.
+    learning: [70, 6],
+    // Kept up for most of the year, then abandoned: the long gap since the
+    // last review is what drives modelled recall below the floor.
+    needs_revision: [380, 40],
+    not_started: undefined,
   };
+
+  /**
+   * How durable this fictional student's memory actually is, relative to what
+   * the shipped FSRS weights assume. 0.62 means they forget noticeably faster
+   * than the published model expects.
+   *
+   * Calibration will not say anything until it has a few hundred reviews, and
+   * a hand-written list that long would be fiction dressed up as data. So the
+   * earlier history is *derived* instead: this constant is the truth, and each
+   * review's outcome is drawn against it with a fixed seed. The calibration
+   * page therefore has a known right answer on demo data — it should report
+   * overconfidence and fit a scale below 1 — which makes the seed a check on
+   * the feature rather than a showcase for it.
+   *
+   * Do not expect the fit to land on 0.62. Gaps in the log were chosen by the
+   * uncorrected scheduler, which concentrates reviews where it already thinks
+   * recall is about 90% and leaves little leverage to see further, so the
+   * point estimate is biased by an amount that depends on the log. What has
+   * to hold is that 0.62 falls inside the reported interval.
+   */
+  const DEMO_DURABILITY = 0.62;
+
+  const CARDS_PER_TOPIC = 8;
+
+  /** Fixed seed, so every fresh clone gets the same demo student. */
+  function demoRandom(): () => number {
+    let state = 0x5eed_1b0a;
+    return () => {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 0x1_0000_0000;
+    };
+  }
+
+  /**
+   * Replay one card's reviews through the real scheduler, between the two
+   * dates its topic's profile gives. Reviews happen when the shipped model
+   * says they are due; outcomes are drawn against DEMO_DURABILITY. Stability
+   * and due dates are therefore genuine FSRS output rather than numbers
+   * chosen to look right.
+   */
+  function seedReviews(cardId: string, window: [number, number], random: () => number): void {
+    const [startDaysAgo, stopDaysAgo] = window;
+    let state: RevisionState | undefined;
+    let at = now - startDaysAgo * DAY_MS + Math.floor(random() * 10) * DAY_MS;
+    const until = now - stopDaysAgo * DAY_MS;
+
+    while (at < until) {
+      let grade: 1 | 3 | 4;
+      if (!state) {
+        grade = 3;
+      } else {
+        const elapsed = (at - (state.lastReviewedAt ?? at)) / DAY_MS;
+        // Drawn against the student's real durability, not the model's guess.
+        const recalled = random() < retrievability(elapsed, state.stability * DEMO_DURABILITY);
+        grade = recalled ? (random() < 0.2 ? 4 : 3) : 1;
+      }
+      repo.gradeCard(conn, user.id, cardId, grade, at);
+      const next = applyReview(state, grade, at, DEFAULT_PARAMS);
+      state = next.state;
+      at += Math.max(1, next.intervalDays) * DAY_MS;
+    }
+  }
 
   /** [total attempts, correct attempts, days to spread them across]. */
   const ATTEMPTS: Record<Profile, [number, number, number]> = {
@@ -102,6 +175,7 @@ function seedIfEmpty(conn: Db): void {
     not_started: [0, 0, 1],
   };
 
+  const random = demoRandom();
   const topicIds: Record<string, string> = {};
   const topicProfiles: Array<[string, string, Profile]> = [];
 
@@ -117,17 +191,21 @@ function seedIfEmpty(conn: Db): void {
       topicIds[key] = id;
       topicProfiles.push([key, id, profile]);
 
-      for (let c = 0; c < 2; c++) {
+      // Eight cards a topic. Under FSRS a single card generates only about
+      // four reviews a year once its intervals stretch, so a two-card topic
+      // would leave the whole deck with too thin a log to calibrate against —
+      // which is a fact about real decks, not about the demo.
+      for (let c = 0; c < CARDS_PER_TOPIC; c++) {
         const { id: cardId } = repo.createCard(conn, user.id, {
           topicId: id,
           front: `${topicName}: recall prompt ${c + 1}`,
           back: `Worked answer for ${topicName} (${c + 1})`,
         });
-        // Replay the history through the real scheduler, so stability and due
-        // dates are genuine FSRS output rather than invented numbers.
-        for (const [daysAgo, grade] of REVIEW_HISTORY[profile]) {
-          repo.gradeCard(conn, user.id, cardId, grade, now - daysAgo * DAY_MS);
-        }
+        // A topic never started stays untouched: a card with no reps is
+        // load-bearing for "new card" handling and for what the graph calls
+        // ready to learn.
+        const window = REVIEW_WINDOW[profile];
+        if (window) seedReviews(cardId, window, random);
       }
     });
 

@@ -115,6 +115,22 @@ simulation, and no 3D: neither would add information.
   test asserts the cascade works.
 - Activity events are append-only. A correction inserts a superseding row and
   writes an audit entry; reads filter superseded rows. History stays auditable.
+- A fitted durability correction is applied at *every* prediction, not at a
+  card's first review. A correction to initial stability alone is regressed
+  away by FSRS's growth terms within a few reps — the growth factor is larger
+  when stability is smaller — which makes it close to unidentifiable from a
+  log. `stabilityScale` is therefore a field on `FsrsParams` rather than a
+  scaling of the 17 weights, and every surface that shows a modelled recall
+  goes through `predictedRecall` so a corrected scheduler can never sit beside
+  an uncorrected number on screen.
+- Calibration replays the log rather than reading the stability stored at the
+  time, which is what makes "what *would* the model have predicted under a
+  different parameter?" answerable at all. The replay advances state under the
+  params that actually produced the log: the scale corrects how that state is
+  read, so it must not rewrite the history it is being judged against.
+- A stored correction keeps the evidence that justified it — the review count
+  and the interval — beside the number. A constant whose provenance has been
+  lost is indistinguishable from a magic number.
 - Note edits snapshot the previous body before overwriting. A retitle or a
   reattach does not snapshot — there is no writing to lose — so history stays
   a record of the text, not of every field touched.

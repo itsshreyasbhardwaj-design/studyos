@@ -9,7 +9,7 @@
  */
 
 import type { MasteryState, PracticeAttempt } from '../types.ts';
-import { DAY_MS, retrievability } from '../revision/fsrs.ts';
+import { DAY_MS, predictedRecall, type FsrsParams } from '../revision/fsrs.ts';
 import type { RevisionState } from '../types.ts';
 
 export interface MasteryEvidence {
@@ -19,6 +19,12 @@ export interface MasteryEvidence {
   /** Unresolved mistake-notebook entries for this topic. */
   openMistakes?: number;
   now: number;
+  /**
+   * The learner's fitted FSRS params. Retention evidence must be read through
+   * the same correction the scheduler uses; note this carries no duration,
+   * and must not — see the assertion in mastery.test.ts.
+   */
+  params?: FsrsParams;
 }
 
 export interface MasteryAssessment {
@@ -46,7 +52,7 @@ const RETENTION_FLOOR = 0.85;
 const RECENT_WINDOW_DAYS = 14;
 
 export function assessMastery(evidence: MasteryEvidence): MasteryAssessment {
-  const { attempts, revisionStates = [], openMistakes = 0, now } = evidence;
+  const { attempts, revisionStates = [], openMistakes = 0, now, params } = evidence;
   const reasons: string[] = [];
 
   const graded = attempts.filter((a) => a.correct !== undefined);
@@ -69,7 +75,7 @@ export function assessMastery(evidence: MasteryEvidence): MasteryAssessment {
   const predictedRetention =
     reviewedStates.length > 0
       ? reviewedStates
-          .map((s) => retrievability((now - s.lastReviewedAt!) / DAY_MS, s.stability))
+          .map((s) => predictedRecall(s, now, params)!)
           .reduce((a, b) => a + b, 0) / reviewedStates.length
       : undefined;
 

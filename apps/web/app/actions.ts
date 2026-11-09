@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import * as repo from '@studyos/db';
 import { newId } from '@studyos/db';
-import type { ReviewGrade } from '@studyos/core';
+import { fitStabilityScale, type ReviewGrade } from '@studyos/core';
 import { db, currentUserId } from '../lib/db.ts';
 
 export async function gradeCardAction(cardId: string, grade: number) {
@@ -185,4 +185,35 @@ export async function deleteNoteAction(noteId: string): Promise<{ ok: boolean }>
   const ok = repo.deleteNote(db(), currentUserId(), noteId);
   revalidatePath('/notes');
   return { ok };
+}
+
+/**
+ * Adopt the fitted correction. Refuses anything the fitter itself refused,
+ * so the only way to end up with a stored scale is through evidence that
+ * cleared the thresholds.
+ */
+export async function applyFitAction(): Promise<{ ok: boolean; reason?: string }> {
+  const conn = db();
+  const userId = currentUserId();
+  const fit = fitStabilityScale(repo.listReviewHistory(conn, userId));
+  if (!fit.fitted) return { ok: false, reason: fit.reason ?? 'there is nothing to apply' };
+
+  repo.setStabilityScale(conn, userId, {
+    scale: fit.scale,
+    fittedFromReviews: fit.scored,
+    interval: fit.interval,
+  });
+  // A correction changes every modelled recall and every future interval.
+  for (const path of ['/', '/revision', '/subjects', '/graph', '/report', '/calibration']) {
+    revalidatePath(path);
+  }
+  return { ok: true };
+}
+
+export async function clearFitAction(): Promise<{ ok: boolean }> {
+  repo.setStabilityScale(db(), currentUserId(), undefined);
+  for (const path of ['/', '/revision', '/subjects', '/graph', '/report', '/calibration']) {
+    revalidatePath(path);
+  }
+  return { ok: true };
 }

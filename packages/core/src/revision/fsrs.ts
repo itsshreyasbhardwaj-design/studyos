@@ -30,12 +30,24 @@ export interface FsrsParams {
   desiredRetention: number;
   /** Hard ceiling on scheduled gaps, in days. */
   maximumInterval: number;
+  /**
+   * How durable this learner's memory is relative to what the weights assume.
+   * 1 is the published model; 0.6 means every stability estimate it produces
+   * is 40% too generous for this person.
+   *
+   * This is the one knob the calibration fitter moves. It is deliberately not
+   * one of the 17 weights: it has to be applied at every prediction, because
+   * a correction applied only at a card's first review is regressed away by
+   * the growth terms within a few reps and becomes unidentifiable from a log.
+   */
+  stabilityScale: number;
 }
 
 export const DEFAULT_PARAMS: FsrsParams = {
   weights: DEFAULT_WEIGHTS,
   desiredRetention: 0.9,
   maximumInterval: 36500,
+  stabilityScale: 1,
 };
 
 /**
@@ -47,6 +59,26 @@ export function retrievability(elapsedDays: number, stability: number): number {
   if (stability <= 0) return 0;
   const t = Math.max(0, elapsedDays);
   return Math.pow(1 + (FACTOR * t) / stability, DECAY);
+}
+
+/**
+ * Probability that this learner recalls `state` now, with their fitted
+ * durability applied. Every surface that shows a predicted recall goes
+ * through here, so a corrected scheduler can never sit beside an uncorrected
+ * number on screen.
+ *
+ * Undefined for a card never reviewed: there is no decay from nothing.
+ */
+export function predictedRecall(
+  state: Pick<RevisionState, 'stability' | 'lastReviewedAt' | 'reps'>,
+  now: number,
+  params: FsrsParams = DEFAULT_PARAMS,
+): number | undefined {
+  if (state.reps === 0 || state.lastReviewedAt === undefined) return undefined;
+  return retrievability(
+    (now - state.lastReviewedAt) / DAY_MS,
+    state.stability * params.stabilityScale,
+  );
 }
 
 /** Days until recall probability decays to `retention`. Inverse of the above. */
@@ -166,7 +198,7 @@ export function applyReview(
   const elapsedDays = prior.lastReviewedAt
     ? Math.max(0, (reviewedAt - prior.lastReviewedAt) / DAY_MS)
     : 0;
-  const r = retrievability(elapsedDays, prior.stability);
+  const r = retrievability(elapsedDays, prior.stability * params.stabilityScale);
   const difficulty = nextDifficulty(prior.difficulty, grade, params);
 
   let stability: number;
@@ -200,7 +232,13 @@ function schedule(
   params: FsrsParams,
   rAtReview: number,
 ): ReviewOutcome {
-  const raw = intervalForRetention(state.stability, params.desiredRetention);
+  // Scheduled against the learner's effective durability, not the raw model
+  // estimate — otherwise a fitted correction would change what we *say* and
+  // not what we *do*.
+  const raw = intervalForRetention(
+    state.stability * params.stabilityScale,
+    params.desiredRetention,
+  );
   const intervalDays = Math.min(Math.max(Math.round(raw), 1), params.maximumInterval);
   return {
     state: { ...state, dueAt: reviewedAt + intervalDays * DAY_MS },

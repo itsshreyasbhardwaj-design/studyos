@@ -18,7 +18,7 @@ Open http://localhost:3111. First run seeds a sample IB student so the UI is not
 empty; delete `studyos.db` to start clean.
 
 ```bash
-pnpm test        # 170 tests, no build step, ~0.5s
+pnpm test        # 195 tests, no build step, ~0.5s
 pnpm build       # production build of the web app
 ```
 
@@ -38,6 +38,10 @@ Requires Node 24+ (for `node:sqlite` and native TypeScript execution) and pnpm.
   from it.
 - **Revision** — FSRS-4.5 queue with interleaving, backlog triage, and a
   forgetfulness radar that states its evidence for every row.
+- **Model check** — replays your own review log to ask whether FSRS actually
+  describes you, reports predicted against observed recall with the sampling
+  error, and fits one durability parameter. It refuses to fit below 100 scored
+  reviews or 20 lapses, and refuses again when the 95% interval contains 1.
 - **Knowledge graph** — topics laid out by prerequisite depth, coloured by
   mastery. Its real output is the analysis: *weak foundations* names the
   prerequisite that plausibly explains a topic you're stuck on, and *ready to
@@ -69,6 +73,9 @@ Three consequences that are enforced in code rather than by convention:
   automatically, because attribution involved a tie-break.
 - `assessMastery` receives no study-duration input at all; a test asserts this.
 - A never-reviewed card reports *no* retention rather than 0%.
+- The scheduler's own accuracy is measured against your log and reported, and
+  a correction is refused when the evidence cannot distinguish you from the
+  population the published weights were fitted to.
 - The graph reports a foundation gap only when the struggling topic *and* a
   prerequisite are both weak — a hard topic with solid prerequisites is a
   different problem, and the panel stays quiet about it.

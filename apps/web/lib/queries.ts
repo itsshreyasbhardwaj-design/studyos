@@ -7,6 +7,9 @@ import {
   readyToLearn,
   assessMastery,
   buildDailyReport,
+  calibrate,
+  fitStabilityScale,
+  MIN_REVIEWS_TO_JUDGE,
   buildQueue,
   computePeriodMetrics,
   consistency,
@@ -25,6 +28,7 @@ import { db, currentUserId } from './db.ts';
 export function loadDashboard(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const today = dayWindow(now);
 
   const events = repo.listEvents(conn, userId, today.from, today.to);
@@ -42,8 +46,8 @@ export function loadDashboard(now = Date.now()) {
     }
   }
 
-  const queue = buildQueue(cards, { now, limit: 20, examDates });
-  const radar = forgetfulnessRadar(cards, now, examDates);
+  const queue = buildQueue(cards, { now, limit: 20, examDates, params });
+  const radar = forgetfulnessRadar(cards, now, examDates, params);
   const metrics = computePeriodMetrics({
     window: today,
     events,
@@ -81,6 +85,7 @@ export function loadDashboard(now = Date.now()) {
 export function loadPlanner(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const tasks = repo.listTasks(conn, userId);
   const exams = repo.listExams(conn, userId);
   const availability = repo.listAvailability(conn, userId, now, now + 8 * DAY_MS);
@@ -139,6 +144,7 @@ function extraHours(
 export function loadRevision(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const cards = repo.listRevisionCards(conn, userId);
   const exams = repo.listExams(conn, userId);
   const subjects = repo.listSubjects(conn, userId);
@@ -150,7 +156,7 @@ export function loadRevision(now = Date.now()) {
     }
   }
 
-  const queue = buildQueue(cards, { now, limit: 20, examDates });
+  const queue = buildQueue(cards, { now, limit: 20, examDates, params });
   const detail = conn
     .prepare(
       `SELECT c.id, c.front, c.back, t.name AS topic_name, s.name AS subject_name
@@ -183,7 +189,7 @@ export function loadRevision(now = Date.now()) {
       backlogCount: queue.backlogCount,
       backlogSessions: queue.backlogSessions,
     },
-    radar: forgetfulnessRadar(cards, now, examDates),
+    radar: forgetfulnessRadar(cards, now, examDates, params),
     topicNames: Object.fromEntries(
       (
         conn
@@ -201,6 +207,7 @@ export function loadRevision(now = Date.now()) {
 export function loadSubjects(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const subjects = repo.listSubjects(conn, userId);
   const allTopics = repo.listTopics(conn, userId);
   const cards = repo.listRevisionCards(conn, userId);
@@ -219,6 +226,7 @@ export function loadSubjects(now = Date.now()) {
       const assessed = topics.map((t) => {
         const attempts = repo.listAttempts(conn, userId, t.id);
         const assessment = assessMastery({
+          params,
           attempts,
           revisionStates: (byTopic.get(t.id) ?? []).map((c) => c.state),
           openMistakes: repo.countOpenMistakes(conn, userId, t.id),
@@ -247,6 +255,7 @@ export function loadSubjects(now = Date.now()) {
 export function loadGraph(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const subjects = repo.listSubjects(conn, userId);
   const subjectNames = Object.fromEntries(subjects.map((s) => [s.id, s.name]));
   const topics = repo.listTopics(conn, userId);
@@ -264,6 +273,7 @@ export function loadGraph(now = Date.now()) {
   const nodeInputs = topics.map((t) => {
     const topicCards = cardsByTopic.get(t.id) ?? [];
     const assessment = assessMastery({
+      params,
       attempts: repo.listAttempts(conn, userId, t.id),
       revisionStates: topicCards.map((c) => c.state),
       openMistakes: repo.countOpenMistakes(conn, userId, t.id),
@@ -296,6 +306,7 @@ export function loadGraph(now = Date.now()) {
 export function loadAnalytics(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const from = dayWindow(now - 29 * DAY_MS).from;
 
   const events = repo.listEvents(conn, userId, from, now + DAY_MS);
@@ -332,6 +343,7 @@ export function loadAnalytics(now = Date.now()) {
 export function loadReport(now = Date.now()) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
   const today = dayWindow(now);
 
   const events = repo.listEvents(conn, userId, today.from, today.to);
@@ -361,7 +373,7 @@ export function loadReport(now = Date.now()) {
     report: buildDailyReport({
       at: now,
       metrics,
-      radar: forgetfulnessRadar(cards, now),
+      radar: forgetfulnessRadar(cards, now, {}, params),
       tomorrowPlan: todayPlan,
     }),
     subjectNames: Object.fromEntries(subjects.map((s) => [s.id, s.name])),
@@ -384,6 +396,7 @@ export function loadReport(now = Date.now()) {
 export function loadNotes(query?: string, selectedId?: string) {
   const conn = db();
   const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
 
   const all = repo.listNotes(conn, userId);
   const trimmed = (query ?? '').trim();
@@ -418,5 +431,24 @@ export function loadNotes(query?: string, selectedId?: string) {
     selected,
     history: selected ? repo.listNoteHistory(conn, userId, selected.id) : [],
     topics,
+  };
+}
+
+/** Everything the calibration page needs: the measurement, the fit, and what is stored. */
+export function loadCalibration() {
+  const conn = db();
+  const userId = currentUserId();
+  const params = repo.getUserFsrsParams(conn, userId);
+  const history = repo.listReviewHistory(conn, userId);
+
+  return {
+    /** Measured against the published model, which is the thing being judged. */
+    published: calibrate(history, { ...params, stabilityScale: 1 }),
+    /** Measured against whatever correction is currently in force. */
+    current: calibrate(history, params),
+    fit: fitStabilityScale(history, params),
+    stored: repo.getStoredFit(conn, userId),
+    appliedScale: params.stabilityScale,
+    minToJudge: MIN_REVIEWS_TO_JUDGE,
   };
 }

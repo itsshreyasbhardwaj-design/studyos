@@ -8,7 +8,7 @@
  */
 
 import type { RevisionState } from '../types.ts';
-import { DAY_MS, retrievability } from './fsrs.ts';
+import { DAY_MS, predictedRecall, type FsrsParams } from './fsrs.ts';
 
 export interface RevisionCard {
   id: string;
@@ -20,6 +20,8 @@ export interface RevisionCard {
 }
 
 export interface QueueOptions {
+  /** The learner's fitted FSRS params, so shown recall matches scheduled recall. */
+  params?: FsrsParams;
   now: number;
   /** Cards to serve in this session. */
   limit: number;
@@ -63,7 +65,7 @@ export function buildQueue(
       const isNew = c.state.reps === 0 || c.state.lastReviewedAt === undefined;
       const predictedRetention = isNew
         ? undefined
-        : retrievability((now - c.state.lastReviewedAt!) / DAY_MS, c.state.stability);
+        : predictedRecall(c.state, now, opts.params)!;
       const examAt = examDates[c.subjectId];
       const daysToExam = examAt ? (examAt - now) / DAY_MS : undefined;
 

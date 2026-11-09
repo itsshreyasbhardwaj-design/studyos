@@ -16,7 +16,7 @@ import type {
   AvailabilityBlock,
 } from '@studyos/core';
 import { applyReview, wouldCreateCycle, DAY_MS, DEFAULT_PARAMS, type FsrsParams } from '@studyos/core';
-import type { RevisionCard } from '@studyos/core';
+import type { RevisionCard, ReviewRecord } from '@studyos/core';
 import { newId, transaction, type Db } from './client.ts';
 import { ftsQuery } from './fts.ts';
 
@@ -438,7 +438,93 @@ export function getUserFsrsParams(db: Db, userId: string): FsrsParams {
     weights: row.weights_json ? JSON.parse(row.weights_json) : DEFAULT_PARAMS.weights,
     desiredRetention: row.desired_retention,
     maximumInterval: row.maximum_interval,
+    stabilityScale: row.stability_scale ?? 1,
   };
+}
+
+export interface StoredFit {
+  scale: number;
+  fittedFromReviews: number;
+  interval?: [number, number];
+  updatedAt: number;
+}
+
+/** What the stored correction was fitted from, or undefined if none is stored. */
+export function getStoredFit(db: Db, userId: string): StoredFit | undefined {
+  const row = db
+    .prepare('SELECT * FROM revision_params WHERE user_id = ?')
+    .get(userId) as any;
+  if (!row || row.fitted_from_reviews === null || row.fitted_from_reviews === undefined) {
+    return undefined;
+  }
+  return {
+    scale: row.stability_scale ?? 1,
+    fittedFromReviews: row.fitted_from_reviews,
+    interval: row.fitted_interval_json ? JSON.parse(row.fitted_interval_json) : undefined,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Store a fitted correction, or clear it back to the published model.
+ *
+ * The evidence is stored with the number. A correction whose provenance has
+ * been lost is indistinguishable from a magic constant, and this product does
+ * not ship magic constants.
+ */
+export function setStabilityScale(
+  db: Db,
+  userId: string,
+  fit: { scale: number; fittedFromReviews: number; interval?: [number, number] } | undefined,
+): void {
+  const now = Date.now();
+  if (!fit) {
+    db.prepare(
+      `INSERT INTO revision_params (user_id, stability_scale, fitted_from_reviews,
+                                    fitted_interval_json, updated_at)
+       VALUES (?, 1, NULL, NULL, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         stability_scale = 1, fitted_from_reviews = NULL,
+         fitted_interval_json = NULL, updated_at = excluded.updated_at`,
+    ).run(userId, now);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO revision_params (user_id, stability_scale, fitted_from_reviews,
+                                  fitted_interval_json, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       stability_scale = excluded.stability_scale,
+       fitted_from_reviews = excluded.fitted_from_reviews,
+       fitted_interval_json = excluded.fitted_interval_json,
+       updated_at = excluded.updated_at`,
+  ).run(
+    userId,
+    fit.scale,
+    fit.fittedFromReviews,
+    fit.interval ? JSON.stringify(fit.interval) : null,
+    now,
+  );
+}
+
+/**
+ * The whole review log, oldest first — what calibration replays. Scoped to
+ * the user through the card, like every other read here.
+ */
+export function listReviewHistory(db: Db, userId: string): ReviewRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT l.card_id, l.reviewed_at, l.grade FROM review_log l
+       JOIN flashcards c ON c.id = l.card_id
+       WHERE c.user_id = ?
+       ORDER BY l.reviewed_at, l.card_id`,
+    )
+    .all(userId) as Array<{ card_id: string; reviewed_at: number; grade: number }>;
+  return rows.map((r) => ({
+    cardId: r.card_id,
+    reviewedAt: r.reviewed_at,
+    grade: r.grade as ReviewGrade,
+  }));
 }
 
 export function listRevisionCards(db: Db, userId: string): RevisionCard[] {

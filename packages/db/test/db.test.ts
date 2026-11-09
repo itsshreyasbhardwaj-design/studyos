@@ -17,7 +17,12 @@ test('migrations run once and are idempotent', () => {
   const second = migrate(db);
   assert.deepEqual(second, [], 'a second migrate() must be a no-op');
   const rows = db.prepare('SELECT id FROM _migrations ORDER BY id').all() as Array<{ id: string }>;
-  assert.deepEqual(rows.map((r) => r.id), ['001_core', '002_fts_notes', '003_user_fsrs_params']);
+  assert.deepEqual(rows.map((r) => r.id), [
+    '001_core',
+    '002_fts_notes',
+    '003_user_fsrs_params',
+    '004_stability_scale',
+  ]);
 });
 
 test('foreign keys are enforced, so cascades actually work', () => {
@@ -695,4 +700,66 @@ test('another user cannot delete your links', () => {
 
   assert.equal(repo.deleteTopicLink(db, other.id, link), false);
   assert.equal(repo.listTopicLinks(db, userId).length, 1, 'the link must survive');
+});
+
+test('a user with no stored fit gets the published model', () => {
+  const { db, userId } = fresh();
+  assert.equal(repo.getUserFsrsParams(db, userId).stabilityScale, 1);
+  assert.equal(repo.getStoredFit(db, userId), undefined);
+});
+
+test('a stored fit keeps the evidence that justified it', () => {
+  const { db, userId } = fresh();
+  repo.setStabilityScale(db, userId, {
+    scale: 0.62,
+    fittedFromReviews: 412,
+    interval: [0.48, 0.81],
+  });
+  assert.equal(repo.getUserFsrsParams(db, userId).stabilityScale, 0.62);
+  const stored = repo.getStoredFit(db, userId);
+  assert.equal(stored?.fittedFromReviews, 412);
+  assert.deepEqual(stored?.interval, [0.48, 0.81]);
+});
+
+test('refitting replaces the stored correction rather than adding a second', () => {
+  const { db, userId } = fresh();
+  repo.setStabilityScale(db, userId, { scale: 0.62, fittedFromReviews: 412 });
+  repo.setStabilityScale(db, userId, { scale: 0.71, fittedFromReviews: 530 });
+  const rows = db.prepare('SELECT COUNT(*) AS n FROM revision_params').get() as { n: number };
+  assert.equal(rows.n, 1);
+  assert.equal(repo.getStoredFit(db, userId)?.scale, 0.71);
+});
+
+test('clearing a fit returns the user to the published model', () => {
+  const { db, userId } = fresh();
+  repo.setStabilityScale(db, userId, { scale: 0.62, fittedFromReviews: 412, interval: [0.4, 0.8] });
+  repo.setStabilityScale(db, userId, undefined);
+  assert.equal(repo.getUserFsrsParams(db, userId).stabilityScale, 1);
+  assert.equal(repo.getStoredFit(db, userId), undefined, 'the stale evidence must go too');
+});
+
+test('one user\'s fit never reaches another', () => {
+  const { db, userId } = fresh();
+  const other = repo.createUser(db, { displayName: 'Other' });
+  repo.setStabilityScale(db, userId, { scale: 0.5, fittedFromReviews: 300 });
+  assert.equal(repo.getUserFsrsParams(db, other.id).stabilityScale, 1);
+  assert.equal(repo.getStoredFit(db, other.id), undefined);
+});
+
+test('the review history reads back in order and only your own', () => {
+  const { db, userId } = fresh();
+  const subject = repo.createSubject(db, userId, { name: 'Physics HL' });
+  const topic = repo.createTopic(db, { subjectId: subject.id, name: 'Kinematics' });
+  const card = repo.createCard(db, userId, { topicId: topic.id, front: 'q', back: 'a' });
+  repo.gradeCard(db, userId, card.id, 3, NOW);
+  repo.gradeCard(db, userId, card.id, 1, NOW + 5 * DAY_MS);
+
+  const history = repo.listReviewHistory(db, userId);
+  assert.equal(history.length, 2);
+  assert.deepEqual(history.map((h) => h.grade), [3, 1]);
+  assert.ok(history[0].reviewedAt < history[1].reviewedAt);
+  assert.equal(history[0].cardId, card.id);
+
+  const other = repo.createUser(db, { displayName: 'Other' });
+  assert.deepEqual(repo.listReviewHistory(db, other.id), []);
 });

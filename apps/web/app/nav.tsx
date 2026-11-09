@@ -12,6 +12,7 @@ const LINKS = [
   { href: '/graph', label: 'Knowledge Graph' },
   { href: '/notes', label: 'Notes' },
   { href: '/analytics', label: 'Analytics' },
+  { href: '/calibration', label: 'Model check' },
   { href: '/report', label: 'Daily Report' },
 ];
 

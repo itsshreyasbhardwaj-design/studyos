@@ -5,7 +5,7 @@
  * forgotten — it reports modelled recall probability and labels it as such.
  */
 
-import { DAY_MS, retrievability } from './fsrs.ts';
+import { DAY_MS, predictedRecall, type FsrsParams } from './fsrs.ts';
 import type { RevisionCard } from './queue.ts';
 
 export interface RadarRow {
@@ -32,6 +32,7 @@ export function forgetfulnessRadar(
   cards: readonly RevisionCard[],
   now: number,
   examDates: Record<string, number> = {},
+  params?: FsrsParams,
 ): RadarRow[] {
   const byTopic = new Map<string, RevisionCard[]>();
   for (const c of cards) {
@@ -45,9 +46,7 @@ export function forgetfulnessRadar(
     const reviewed = group.filter(
       (c) => c.state.reps > 0 && c.state.lastReviewedAt !== undefined,
     );
-    const retentions = reviewed.map((c) =>
-      retrievability((now - c.state.lastReviewedAt!) / DAY_MS, c.state.stability),
-    );
+    const retentions = reviewed.map((c) => predictedRecall(c.state, now, params)!);
     const predictedRetention =
       retentions.length > 0
         ? retentions.reduce((a, b) => a + b, 0) / retentions.length
